@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 # ==========================================
 # 0. 網頁基礎設定與終極 CSS 外掛注入
 # ==========================================
-st.set_page_config(page_title="Pure Alpha 戰情室 V7.5", layout="wide")
+st.set_page_config(page_title="Pure Alpha 戰情室 V7.6", layout="wide")
 
 custom_css = """
 <style>
@@ -65,7 +65,6 @@ def load_historical_data():
     data_dict = {}
     for t in tickers:
         try:
-            # 修改為抓取 10 年資料，確保有足夠長度給 SGOV 上市與 MA200 暖機
             df = yf.download(t, period="10y", progress=False)
             if not df.empty:
                 data_dict[t] = df['Close'].dropna().squeeze()
@@ -134,7 +133,7 @@ targets["SGOV"] = max(0.0, 100.0 - sum(targets.values()))
 # ==========================================
 # 5. 前端渲染 (HTML UI 上半部)
 # ==========================================
-st.markdown("<h1 style='color:white; font-weight:bold; font-size:36px; margin-bottom:0;'>Pure Alpha 戰情室 V7.5</h1>", unsafe_allow_html=True)
+st.markdown("<h1 style='color:white; font-weight:bold; font-size:36px; margin-bottom:0;'>Pure Alpha 戰情室 V7.6</h1>", unsafe_allow_html=True)
 st.markdown("<p style='color:#94a3b8; font-size:14px; margin-bottom:30px;'>Regime Engine × Dynamic Beta Allocation × Advanced Backtest Engine</p>", unsafe_allow_html=True)
 
 col1, col2 = st.columns([1, 1])
@@ -212,7 +211,7 @@ html_card3 = f"""
 st.markdown(html_card3.replace('\n', ''), unsafe_allow_html=True)
 
 # ==========================================
-# 6. 歷史回測引擎與動態分析報告 (Backtest Engine & Report)
+# 6. 歷史回測引擎與動態分析報告
 # ==========================================
 st.markdown("<div class='cyber-card' style='padding-bottom:10px;'><h2>歷史回測與分析引擎 (Backtest Engine)</h2>", unsafe_allow_html=True)
 
@@ -221,7 +220,6 @@ if not df_all.empty and len(df_all) > 200:
     bt_df_full['MA200'] = bt_df_full['QQQ'].rolling(200).mean()
     bt_df_full = bt_df_full.dropna()
     
-    # 建立日期選擇器 (此時 min_date 已經推到 2021 年初了)
     min_date = bt_df_full.index.min().date()
     max_date = bt_df_full.index.max().date()
     
@@ -252,12 +250,18 @@ if not df_all.empty and len(df_all) > 200:
         cum_bench = (1 + bt_ret[bench_choice]).cumprod()
         
         total_days = len(cum_port)
-        cagr = (cum_port.iloc[-1] ** (252 / total_days)) - 1
-        mdd = ((cum_port / cum_port.cummax()) - 1).min()
-        bt_vol = port_daily_ret.std() * np.sqrt(252)
         
+        # 指標運算
+        total_ret = cum_port.iloc[-1] - 1
+        bench_total_ret = cum_bench.iloc[-1] - 1
+        
+        cagr = (cum_port.iloc[-1] ** (252 / total_days)) - 1
         bench_cagr = (cum_bench.iloc[-1] ** (252 / total_days)) - 1
+        
+        mdd = ((cum_port / cum_port.cummax()) - 1).min()
         bench_mdd = ((cum_bench / cum_bench.cummax()) - 1).min()
+        
+        bt_vol = port_daily_ret.std() * np.sqrt(252)
         bench_vol = bt_ret[bench_choice].std() * np.sqrt(252)
         
         rf = 0.04
@@ -272,37 +276,40 @@ if not df_all.empty and len(df_all) > 200:
             template='plotly_dark', paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
             margin=dict(l=60, r=20, t=30, b=40), height=350,
             legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01),
-            yaxis_title="累積資金淨值 (Initial = 1.0)"
+            yaxis_title="累積資金淨值 (Initial = 1.0)",
+            xaxis_title="回測時間軸"
         )
         st.plotly_chart(fig, use_container_width=True)
         
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("策略年化報酬 (CAGR)", f"{cagr*100:.2f}%", f"{'勝過' if cagr>bench_cagr else '落後'}大盤 {(cagr - bench_cagr)*100:+.2f}%")
-        c2.metric("策略最大回撤 (MDD)", f"{mdd*100:.2f}%", f"大盤回撤 {bench_mdd*100:.2f}%", delta_color="inverse")
-        c3.metric("策略夏普指標 (Sharpe)", f"{sharpe:.2f}", f"大盤夏普 {bench_sharpe:.2f}")
-        c4.metric("回測交易總日數", f"{total_days} 天")
+        # 5 大核心回測指標
+        c1, c2, c3, c4, c5 = st.columns(5)
+        c1.metric("總報酬率 (Total Ret)", f"{total_ret*100:.2f}%", f"大盤 {bench_total_ret*100:.2f}%")
+        c2.metric("年化報酬 (CAGR)", f"{cagr*100:.2f}%", f"大盤 {bench_cagr*100:.2f}%")
+        c3.metric("最大回撤 (MDD)", f"{mdd*100:.2f}%", f"大盤回撤 {bench_mdd*100:.2f}%", delta_color="inverse")
+        c4.metric("年化波動率 (Vol)", f"{bt_vol*100:.2f}%", f"大盤波動 {bench_vol*100:.2f}%", delta_color="inverse")
+        c5.metric("夏普指標 (Sharpe)", f"{sharpe:.2f}", f"大盤夏普 {bench_sharpe:.2f}")
         
         # ==========================================
-        # 動態文字分析報告生成
+        # 動態文字分析報告
         # ==========================================
         bull_days = np.sum(is_bt_bull)
         bear_days = total_days - bull_days
         bull_ratio = (bull_days / total_days) * 100
         
-        cagr_text = f"<span class='{'highlight-up' if cagr > bench_cagr else 'highlight-down'}'>{'擊敗' if cagr > bench_cagr else '落後'}大盤基準</span>"
+        ret_text = f"<span class='{'highlight-up' if total_ret > bench_total_ret else 'highlight-down'}'>{'擊敗' if total_ret > bench_total_ret else '落後'}大盤基準</span>"
         mdd_text = f"<span class='{'highlight-up' if mdd > bench_mdd else 'highlight-down'}'>{'優於' if mdd > bench_mdd else '弱於'}大盤 ({bench_mdd*100:.2f}%)</span>"
         sharpe_text = f"代表策略在承擔相同風險下，具備<span class='{'highlight-up' if sharpe > bench_sharpe else 'highlight-down'}'>{'更強' if sharpe > bench_sharpe else '較弱'}的超額報酬獲取能力</span>。"
-        
-        conclusion = "策略成功發揮了「漲時跟隨、跌時抗跌」的 Pure Alpha 核心精神，展現了頂級的風控能力。" if (cagr > bench_cagr and mdd > bench_mdd) else "在這段區間內，策略呈現了不同的風險特徵，請觀察特定市場事件對資產相關性的影響。"
+        conclusion = "策略成功發揮了「漲時跟隨、跌時抗跌」的 Pure Alpha 核心精神，展現了頂級的風控能力。" if (total_ret > bench_total_ret and mdd > bench_mdd) else "在這段區間內，策略呈現了不同的風險特徵，請觀察特定市場事件對資產相關性的影響。"
         
         report_html = f"""
         <div style="background: rgba(23, 35, 58, 0.5); padding: 20px; border-radius: 12px; margin-top: 20px; border-left: 5px solid #38bdf8;">
-            <h3 style="color: #38bdf8; margin-top: 0; font-size: 18px;">📊 策略深度分析報告</h3>
+            <h3 style="color: #38bdf8; margin-top: 0; font-size: 18px;">📊 策略深度分析報告 (總交易日: {total_days} 天)</h3>
             <div class="report-text">
                 <p>在選定的 <b>{total_days}</b> 個交易日中，市場環境判定為多頭進攻 (Bull) 共 <b>{bull_days}</b> 天 ({bull_ratio:.1f}%)，觸發空頭冬眠防禦 (Bear) 共 <b>{bear_days}</b> 天。</p>
                 <ul style="margin-top: 10px; margin-bottom: 10px;">
-                    <li><b>報酬與抗震診斷：</b>策略創造了 <b>{cagr*100:.2f}%</b> 的年化報酬率，{cagr_text}。在下檔風險控制上，最大回撤鎖定在 <b>{mdd*100:.2f}%</b>，防禦表現{mdd_text}。</li>
-                    <li><b>風險調整後績效：</b>在無風險利率 4% 的假設下，策略夏普值達到 <b>{sharpe:.2f}</b> (基準為 {bench_sharpe:.2f})，{sharpe_text}</li>
+                    <li><b>整體報酬與抗震：</b>策略創造了 <b>{total_ret*100:.2f}%</b> 的總報酬率，{ret_text}。在下檔風險控制上，最大回撤鎖定在 <b>{mdd*100:.2f}%</b>，防禦表現{mdd_text}。</li>
+                    <li><b>波動率特徵：</b>策略年化波動率為 <b>{bt_vol*100:.2f}%</b>，相較於大盤的 {bench_vol*100:.2f}%，顯示策略具有{'更佳的' if bt_vol < bench_vol else '較高的'}波動控制特性。</li>
+                    <li><b>風險調整後績效：</b>在無風險利率 4% 的假設下，策略夏普值達到 <b>{sharpe:.2f}</b> (大盤為 {bench_sharpe:.2f})，{sharpe_text}</li>
                 </ul>
                 <p style="margin-bottom: 0;"><b>系統結語：</b>{conclusion}</p>
             </div>
