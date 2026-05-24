@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 # ==========================================
 # 0. 網頁基礎設定與終極 CSS 外掛注入
 # ==========================================
-st.set_page_config(page_title="Pure Alpha 戰情室 V7", layout="wide")
+st.set_page_config(page_title="Pure Alpha 戰情室 V7.4", layout="wide")
 
 custom_css = """
 <style>
@@ -20,6 +20,7 @@ custom_css = """
         margin-bottom: 20px; color: #e2e8f0;
     }
     .cyber-card h2 { color: #38bdf8; margin-bottom: 20px; font-size: 20px; border-left: 4px solid #38bdf8; padding-left: 10px; }
+    .cyber-card h3 { color: #facc15; font-size: 16px; margin-top: 15px; margin-bottom: 10px; }
     .metric-row { display: flex; justify-content: space-between; align-items: center; padding: 12px 0; border-bottom: 1px solid #24334d; }
     .metric-row:last-child { border-bottom: none; }
     .m-label { color: #cbd5e1; font-size: 14px; }
@@ -41,6 +42,11 @@ custom_css = """
     .badge-sell { background: rgba(239,68,68,0.2); color: #ef4444; }
     .badge-hold { background: rgba(148,163,184,0.15); color: #94a3b8; }
     .badge-critical { background: #ef4444; color: white; }
+    
+    .report-text { line-height: 1.8; color: #cbd5e1; font-size: 15px; }
+    .report-text b { color: white; }
+    .report-text .highlight-up { color: #22c55e; font-weight: bold; }
+    .report-text .highlight-down { color: #ef4444; font-weight: bold; }
 </style>
 """
 st.markdown(custom_css, unsafe_allow_html=True)
@@ -57,7 +63,7 @@ ASSET_ROLES = {"QQQ": "核心成長引擎", "QLD": "動能槓桿放大", "TLT": 
 def load_historical_data():
     tickers = ["QQQ", "QLD", "TLT", "GLD", "UUP", "SGOV", "SPY"]
     end_date = datetime.now()
-    start_date = end_date - timedelta(days=365 * 3)
+    start_date = end_date - timedelta(days=365 * 4) # 加長抓取時間確保有足夠樣本
     data_dict = {}
     for t in tickers:
         try:
@@ -84,19 +90,15 @@ sim_qqq = st.sidebar.slider("QQQ 模擬/現價", 400.0, 900.0, latest_qqq, step=
 sim_ma200 = st.sidebar.slider("QQQ MA200 基準線", 400.0, 800.0, computed_ma200, step=0.01)
 k_value = st.sidebar.slider("動態縮放 K 值", 0.500, 1.500, 1.137, step=0.001)
 threshold = st.sidebar.slider("最小換倉門檻 (%)", 0.5, 5.0, 2.0, step=0.1)
-
 bench_choice = st.sidebar.selectbox("對標基準 (Benchmark)", ["QQQ", "SPY"])
 window_choice = st.sidebar.selectbox("滾動週期 (Window)", [21, 63, 126], index=0)
 
 cutoff_line = sim_ma200 * 0.97
 ratio = sim_qqq / sim_ma200 if sim_ma200 > 0 else 1.0
 
-if sim_qqq >= sim_ma200:
-    regime_text, r_class, is_bull = "核心進攻模式", "bull-box", True
-elif sim_qqq >= cutoff_line:
-    regime_text, r_class, is_bull = "多頭破位警戒區", "neutral-box", True
-else:
-    regime_text, r_class, is_bull = "熊市冬眠啟動", "bear-box", False
+if sim_qqq >= sim_ma200: regime_text, r_class, is_bull = "核心進攻模式", "bull-box", True
+elif sim_qqq >= cutoff_line: regime_text, r_class, is_bull = "多頭破位警戒區", "neutral-box", True
+else: regime_text, r_class, is_bull = "熊市冬眠啟動", "bear-box", False
 
 # ==========================================
 # 3. 優先運算量化矩陣 (取得真實 Beta)
@@ -123,26 +125,18 @@ if not df_all.empty:
 # ==========================================
 base = BULL_BASE if is_bull else BEAR_BASE
 targets = {}
-
 for k in ["QQQ", "QLD", "TLT", "GLD", "UUP"]:
-    if not is_bull and k == "QLD":
-        targets[k] = 0.0
+    if not is_bull and k == "QLD": targets[k] = 0.0
     else:
-        # 攻擊資產完全承受 K 值拉伸，防禦資產則依據 Beta 動態調節
         effective_beta = 1.0 if k in ["QQQ", "QLD"] else asset_metrics[k]["beta"]
-        
-        # 核心公式：Target = Base * [1 + (K-1) * Beta]
-        multiplier = max(0.0, 1 + (k_value - 1) * effective_beta)
-        targets[k] = base[k] * multiplier
-
-# 剩餘資金流入 SGOV 海綿
+        targets[k] = base[k] * max(0.0, 1 + (k_value - 1) * effective_beta)
 targets["SGOV"] = max(0.0, 100.0 - sum(targets.values()))
 
 # ==========================================
-# 5. 前端渲染 (HTML UI)
+# 5. 前端渲染 (HTML UI 上半部)
 # ==========================================
-st.markdown("<h1 style='color:white; font-weight:bold; font-size:36px; margin-bottom:0;'>Pure Alpha 戰情室 V7.3</h1>", unsafe_allow_html=True)
-st.markdown("<p style='color:#94a3b8; font-size:14px; margin-bottom:30px;'>Regime Engine × Dynamic Beta Allocation × Backtest Engine</p>", unsafe_allow_html=True)
+st.markdown("<h1 style='color:white; font-weight:bold; font-size:36px; margin-bottom:0;'>Pure Alpha 戰情室 V7.4</h1>", unsafe_allow_html=True)
+st.markdown("<p style='color:#94a3b8; font-size:14px; margin-bottom:30px;'>Regime Engine × Dynamic Beta Allocation × Advanced Backtest Engine</p>", unsafe_allow_html=True)
 
 col1, col2 = st.columns([1, 1])
 
@@ -219,63 +213,108 @@ html_card3 = f"""
 st.markdown(html_card3.replace('\n', ''), unsafe_allow_html=True)
 
 # ==========================================
-# 6. 歷史回測引擎 (Vectorized Backtest)
+# 6. 歷史回測引擎與動態分析報告 (Backtest Engine & Report)
 # ==========================================
-st.markdown("<div class='cyber-card' style='padding-bottom:10px;'><h2>歷史回測引擎 (Backtest Engine)</h2>", unsafe_allow_html=True)
+st.markdown("<div class='cyber-card' style='padding-bottom:10px;'><h2>歷史回測與分析引擎 (Backtest Engine)</h2>", unsafe_allow_html=True)
 
 if not df_all.empty and len(df_all) > 200:
-    bt_df = df_all.copy()
-    bt_df['MA200'] = bt_df['QQQ'].rolling(200).mean()
-    bt_df = bt_df.dropna()
-    bt_ret = bt_df.pct_change().dropna()
-    bt_df = bt_df.loc[bt_ret.index]
+    bt_df_full = df_all.copy()
+    bt_df_full['MA200'] = bt_df_full['QQQ'].rolling(200).mean()
+    bt_df_full = bt_df_full.dropna()
     
-    is_bt_bull = bt_df['QQQ'] >= (bt_df['MA200'] * 0.97)
+    # 建立日期選擇器
+    min_date = bt_df_full.index.min().date()
+    max_date = bt_df_full.index.max().date()
     
-    w_qqq = np.where(is_bt_bull, BULL_BASE["QQQ"] * k_value, BEAR_BASE["QQQ"] * k_value)
-    w_qld = np.where(is_bt_bull, BULL_BASE["QLD"] * k_value, BEAR_BASE["QLD"] * k_value)
-    w_tlt = np.where(is_bt_bull, BULL_BASE["TLT"] * k_value, BEAR_BASE["TLT"] * k_value)
-    w_gld = np.where(is_bt_bull, BULL_BASE["GLD"] * k_value, BEAR_BASE["GLD"] * k_value)
-    w_uup = np.where(is_bt_bull, BULL_BASE["UUP"] * k_value, BEAR_BASE["UUP"] * k_value)
+    col_d1, col_d2, col_d3 = st.columns([1, 1, 2])
+    with col_d1: start_date = st.date_input("回測起始日", min_date, min_value=min_date, max_value=max_date)
+    with col_d2: end_date = st.date_input("回測結束日", max_date, min_value=min_date, max_value=max_date)
     
-    sum_5 = w_qqq + w_qld + w_tlt + w_gld + w_uup
-    w_sgov = np.maximum(0, 100.0 - sum_5)
+    # 根據選擇區間切割資料
+    bt_df = bt_df_full.loc[pd.to_datetime(start_date):pd.to_datetime(end_date)]
     
-    port_daily_ret = (w_qqq * bt_ret['QQQ'] + w_qld * bt_ret['QLD'] + w_tlt * bt_ret['TLT'] + 
-                      w_gld * bt_ret['GLD'] + w_uup * bt_ret['UUP'] + w_sgov * bt_ret['SGOV']) / 100.0
-    
-    cum_port = (1 + port_daily_ret).cumprod()
-    cum_bench = (1 + bt_ret[bench_choice]).cumprod()
-    
-    total_days = len(cum_port)
-    cagr = (cum_port.iloc[-1] ** (252 / total_days)) - 1
-    mdd = ((cum_port / cum_port.cummax()) - 1).min()
-    bt_vol = port_daily_ret.std() * np.sqrt(252)
-    
-    bench_cagr = (cum_bench.iloc[-1] ** (252 / total_days)) - 1
-    bench_mdd = ((cum_bench / cum_bench.cummax()) - 1).min()
-    bench_vol = bt_ret[bench_choice].std() * np.sqrt(252)
-    
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=cum_port.index, y=cum_port.values, mode='lines', name='Pure Alpha (策略)', line=dict(color='#38bdf8', width=2)))
-    fig.add_trace(go.Scatter(x=cum_bench.index, y=cum_bench.values, mode='lines', name=f'{bench_choice} (大盤基準)', line=dict(color='#64748b', width=1.5)))
-    
-    fig.update_layout(
-        template='plotly_dark', paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-        margin=dict(l=60, r=20, t=30, b=40), height=380,
-        legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01),
-        yaxis_title="累積資金淨值 (Initial = 1.0)",
-        xaxis_title="回測時間軸"
-    )
-    
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("策略年化報酬 (CAGR)", f"{cagr*100:.2f}%", f"勝過大盤 {(cagr - bench_cagr)*100:.2f}%")
-    c2.metric("策略最大回撤 (MDD)", f"{mdd*100:.2f}%", f"大盤回撤 {bench_mdd*100:.2f}%", delta_color="inverse")
-    c3.metric("策略年化波動率 (Vol)", f"{bt_vol*100:.2f}%", f"大盤波動 {bench_vol*100:.2f}%", delta_color="inverse")
-    c4.metric("回測交易總日數", f"{total_days} 天")
-    
-    st.plotly_chart(fig, use_container_width=True)
-    st.caption("※ 註：此回測為向量化簡化模型，未計入手續費與滑價摩擦。Y 軸代表資金從 1.0 開始成長的倍數淨值。")
+    if len(bt_df) > 10:
+        bt_ret = bt_df.pct_change().dropna()
+        bt_df = bt_df.loc[bt_ret.index]
+        
+        is_bt_bull = bt_df['QQQ'] >= (bt_df['MA200'] * 0.97)
+        
+        w_qqq = np.where(is_bt_bull, BULL_BASE["QQQ"] * k_value, BEAR_BASE["QQQ"] * k_value)
+        w_qld = np.where(is_bt_bull, BULL_BASE["QLD"] * k_value, BEAR_BASE["QLD"] * k_value)
+        w_tlt = np.where(is_bt_bull, BULL_BASE["TLT"] * k_value, BEAR_BASE["TLT"] * k_value)
+        w_gld = np.where(is_bt_bull, BULL_BASE["GLD"] * k_value, BEAR_BASE["GLD"] * k_value)
+        w_uup = np.where(is_bt_bull, BULL_BASE["UUP"] * k_value, BEAR_BASE["UUP"] * k_value)
+        sum_5 = w_qqq + w_qld + w_tlt + w_gld + w_uup
+        w_sgov = np.maximum(0, 100.0 - sum_5)
+        
+        port_daily_ret = (w_qqq * bt_ret['QQQ'] + w_qld * bt_ret['QLD'] + w_tlt * bt_ret['TLT'] + 
+                          w_gld * bt_ret['GLD'] + w_uup * bt_ret['UUP'] + w_sgov * bt_ret['SGOV']) / 100.0
+        
+        cum_port = (1 + port_daily_ret).cumprod()
+        cum_bench = (1 + bt_ret[bench_choice]).cumprod()
+        
+        # 運算指標
+        total_days = len(cum_port)
+        cagr = (cum_port.iloc[-1] ** (252 / total_days)) - 1
+        mdd = ((cum_port / cum_port.cummax()) - 1).min()
+        bt_vol = port_daily_ret.std() * np.sqrt(252)
+        
+        bench_cagr = (cum_bench.iloc[-1] ** (252 / total_days)) - 1
+        bench_mdd = ((cum_bench / cum_bench.cummax()) - 1).min()
+        bench_vol = bt_ret[bench_choice].std() * np.sqrt(252)
+        
+        # 夏普值估算 (假設無風險利率 4%)
+        rf = 0.04
+        sharpe = (cagr - rf) / bt_vol if bt_vol > 0 else 0
+        bench_sharpe = (bench_cagr - rf) / bench_vol if bench_vol > 0 else 0
+        
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=cum_port.index, y=cum_port.values, mode='lines', name='Pure Alpha (策略)', line=dict(color='#38bdf8', width=2)))
+        fig.add_trace(go.Scatter(x=cum_bench.index, y=cum_bench.values, mode='lines', name=f'{bench_choice} (大盤基準)', line=dict(color='#64748b', width=1.5)))
+        
+        fig.update_layout(
+            template='plotly_dark', paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+            margin=dict(l=60, r=20, t=30, b=40), height=350,
+            legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01),
+            yaxis_title="累積資金淨值 (Initial = 1.0)"
+        )
+        st.plotly_chart(fig, use_container_width=True)
+        
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("策略年化報酬 (CAGR)", f"{cagr*100:.2f}%", f"{'勝過' if cagr>bench_cagr else '落後'}大盤 {(cagr - bench_cagr)*100:+.2f}%")
+        c2.metric("策略最大回撤 (MDD)", f"{mdd*100:.2f}%", f"大盤回撤 {bench_mdd*100:.2f}%", delta_color="inverse")
+        c3.metric("策略夏普指標 (Sharpe)", f"{sharpe:.2f}", f"大盤夏普 {bench_sharpe:.2f}")
+        c4.metric("回測交易總日數", f"{total_days} 天")
+        
+        # ==========================================
+        # 動態文字分析報告生成
+        # ==========================================
+        bull_days = np.sum(is_bt_bull)
+        bear_days = total_days - bull_days
+        bull_ratio = (bull_days / total_days) * 100
+        
+        cagr_text = f"<span class='{'highlight-up' if cagr > bench_cagr else 'highlight-down'}'>{'擊敗' if cagr > bench_cagr else '落後'}大盤基準</span>"
+        mdd_text = f"<span class='{'highlight-up' if mdd > bench_mdd else 'highlight-down'}'>{'優於' if mdd > bench_mdd else '弱於'}大盤 ({bench_mdd*100:.2f}%)</span>"
+        sharpe_text = f"代表策略在承擔相同風險下，具備<span class='{'highlight-up' if sharpe > bench_sharpe else 'highlight-down'}'>{'更強' if sharpe > bench_sharpe else '較弱'}的超額報酬獲取能力</span>。"
+        
+        conclusion = "策略成功發揮了「漲時跟隨、跌時抗跌」的 Pure Alpha 核心精神，展現了頂級的風控能力。" if (cagr > bench_cagr and mdd > bench_mdd) else "在這段區間內，策略呈現了截然不同的風險特徵。建議觀察特定市場事件對資產相關性的影響。"
+        
+        report_html = f"""
+        <div style="background: rgba(23, 35, 58, 0.5); padding: 20px; border-radius: 12px; margin-top: 20px; border-left: 5px solid #38bdf8;">
+            <h3 style="color: #38bdf8; margin-top: 0; font-size: 18px;">📊 策略深度分析報告</h3>
+            <div class="report-text">
+                <p>在選定的 <b>{total_days}</b> 個交易日中，市場環境判定為多頭進攻 (Bull) 共 <b>{bull_days}</b> 天 ({bull_ratio:.1f}%)，觸發空頭冬眠防禦 (Bear) 共 <b>{bear_days}</b> 天。</p>
+                <ul style="margin-top: 10px; margin-bottom: 10px;">
+                    <li><b>報酬與抗震診斷：</b>策略創造了 <b>{cagr*100:.2f}%</b> 的年化報酬率，{cagr_text}。在下檔風險控制上，最大回撤鎖定在 <b>{mdd*100:.2f}%</b>，防禦表現{mdd_text}。</li>
+                    <li><b>風險調整後績效：</b>在無風險利率 4% 的假設下，策略夏普值達到 <b>{sharpe:.2f}</b> (基準為 {bench_sharpe:.2f})，{sharpe_text}</li>
+                </ul>
+                <p style="margin-bottom: 0;"><b>系統結語：</b>{conclusion}</p>
+            </div>
+        </div>
+        """
+        st.markdown(report_html.replace('\n', ''), unsafe_allow_html=True)
+    else:
+        st.warning("所選日期區間過短，無法進行有效回測計算。")
 else:
     st.warning("資料載入中，或歷史資料不足 200 天無法啟動回測引擎...")
 
