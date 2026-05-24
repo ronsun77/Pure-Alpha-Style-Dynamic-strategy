@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 # ==========================================
 # 0. 網頁基礎設定與終極 CSS 外掛注入
 # ==========================================
-st.set_page_config(page_title="Pure Alpha 戰情室 V7.10", layout="wide")
+st.set_page_config(page_title="Pure Alpha 戰情室 V7.11", layout="wide")
 
 custom_css = """
 <style>
@@ -27,9 +27,10 @@ custom_css = """
     .m-value { color: white; font-weight: bold; font-family: monospace; font-size: 16px; }
     .c-green { color: #22c55e; } .c-red { color: #ef4444; } .c-yellow { color: #facc15; }
     
+    /* === 表格字體與排版放大優化 === */
     .cyber-table { width: 100%; border-collapse: collapse; margin-top: 5px; }
-    .cyber-table th, .cyber-table td { padding: 10px 8px; text-align: center; border-bottom: 1px solid #24334d; font-size: 13px; }
-    .cyber-table th { background: #1e293b; color: #94a3b8; font-weight: 600; }
+    .cyber-table th, .cyber-table td { padding: 14px 10px; text-align: center; border-bottom: 1px solid #24334d; font-size: 16px; }
+    .cyber-table th { background: #1e293b; color: #94a3b8; font-weight: 600; font-size: 15px; }
     .cyber-table td { color: #e2e8f0; }
     
     .regime-box { margin-top:20px; padding:15px; border-radius:12px; text-align:center; font-size:18px; font-weight:bold; }
@@ -37,7 +38,8 @@ custom_css = """
     .bear-box { background: rgba(239,68,68,0.15); border: 1px solid #ef4444; color: #ef4444; }
     .neutral-box { background: rgba(250,204,21,0.15); border: 1px solid #facc15; color: #facc15; }
     
-    .badge-action { padding: 4px 8px; border-radius: 4px; font-weight: bold; font-size: 12px; }
+    /* === 交易指令標籤放大 === */
+    .badge-action { padding: 6px 12px; border-radius: 6px; font-weight: bold; font-size: 14px; }
     .badge-buy { background: rgba(34,197,94,0.2); color: #22c55e; }
     .badge-sell { background: rgba(239,68,68,0.2); color: #ef4444; }
     .badge-hold { background: rgba(148,163,184,0.15); color: #94a3b8; }
@@ -121,7 +123,7 @@ if not df_all.empty:
         asset_metrics[asset] = {"vol": vol, "corr": corr, "beta": beta}
 
 # ==========================================
-# 4. 目標權重分配 (對齊 Excel 公式)
+# 4. 目標權重分配
 # ==========================================
 base = BULL_BASE if is_bull else BEAR_BASE
 targets = {}
@@ -138,7 +140,7 @@ targets["SGOV"] = max(0.0, 100.0 - sum(targets.values()))
 # ==========================================
 # 5. 前端渲染 (HTML UI 上半部)
 # ==========================================
-st.markdown("<h1 style='color:white; font-weight:bold; font-size:36px; margin-bottom:0;'>Pure Alpha 戰情室 V7.10</h1>", unsafe_allow_html=True)
+st.markdown("<h1 style='color:white; font-weight:bold; font-size:36px; margin-bottom:0;'>Pure Alpha 戰情室 V7.11</h1>", unsafe_allow_html=True)
 st.markdown("<p style='color:#94a3b8; font-size:14px; margin-bottom:30px;'>Regime Engine × Excel Logic Allocation × Visual Dashboard</p>", unsafe_allow_html=True)
 
 col1, col2 = st.columns([1, 1])
@@ -182,6 +184,7 @@ with col2:
     """
     st.markdown(html_card2.replace('\n', ''), unsafe_allow_html=True)
 
+# === 表格生成區塊 (字體放大) ===
 table_rows = ""
 for asset in ["QQQ", "QLD", "TLT", "GLD", "UUP", "SGOV"]:
     cur, tgt = CURRENT_WEIGHTS[asset], targets[asset]
@@ -200,7 +203,8 @@ for asset in ["QQQ", "QLD", "TLT", "GLD", "UUP", "SGOV"]:
     corr_color = "#22c55e" if corr > 0.4 else ("#ef4444" if corr < -0.1 else "#facc15")
     beta_str = f"{asset_metrics[asset]['beta']:.2f}"
 
-    table_rows += f'<tr style="{bg_color}"><td style="text-align:left; padding-left:15px;"><b>{asset}</b> <span style="color:#64748b; font-size:11px;">{ASSET_ROLES[asset]}</span></td><td style="font-family:monospace;">{cur:.2f}%</td><td style="font-family:monospace; font-weight:bold; color:white;">{tgt:.2f}%</td><td style="font-family:monospace; color:{diff_color};">{diff:+.2f}%</td><td style="font-family:monospace; color:#38bdf8;">{vol_str}</td><td style="font-family:monospace; color:{corr_color};">{corr:.2f}</td><td style="font-family:monospace;">{beta_str}</td><td><span class="badge-action {act_class}">{action}</span></td></tr>'
+    # 說明文字放大至 13px
+    table_rows += f'<tr style="{bg_color}"><td style="text-align:left; padding-left:15px;"><b>{asset}</b> <span style="color:#64748b; font-size:13px;">{ASSET_ROLES[asset]}</span></td><td style="font-family:monospace;">{cur:.2f}%</td><td style="font-family:monospace; font-weight:bold; color:white;">{tgt:.2f}%</td><td style="font-family:monospace; color:{diff_color};">{diff:+.2f}%</td><td style="font-family:monospace; color:#38bdf8;">{vol_str}</td><td style="font-family:monospace; color:{corr_color};">{corr:.2f}</td><td style="font-family:monospace;">{beta_str}</td><td><span class="badge-action {act_class}">{action}</span></td></tr>'
 
 html_card3 = f"""
 <div class="cyber-card" style="margin-bottom:30px;">
@@ -221,10 +225,8 @@ st.markdown(html_card3.replace('\n', ''), unsafe_allow_html=True)
 col_pie, col_beta = st.columns([1, 2.2])
 
 with col_pie:
-    # 標題改為：目前實倉資產配比
     st.markdown("<h2 style='color: #38bdf8; font-size: 18px; border-left: 4px solid #38bdf8; padding-left: 10px; margin-bottom: 10px;'>目前實倉資產配比</h2>", unsafe_allow_html=True)
     
-    # 資料源改為：CURRENT_WEIGHTS
     pie_labels = list(CURRENT_WEIGHTS.keys())
     pie_values = list(CURRENT_WEIGHTS.values())
     pie_colors = [CHART_COLORS[l] for l in pie_labels]
@@ -249,14 +251,12 @@ with col_beta:
         roll_var = returns_df_full[bench_choice].rolling(window=window_choice).var()
         roll_beta = roll_cov.div(roll_var, axis=0).dropna().tail(504)
         
-        # 畫出個別資產的 Beta
         for asset in ["QQQ", "QLD", "TLT", "GLD", "UUP", "SGOV"]:
             fig_beta.add_trace(go.Scatter(
                 x=roll_beta.index, y=roll_beta[asset], mode='lines', 
                 name=asset, line=dict(color=CHART_COLORS[asset], width=2 if asset in ["QQQ","QLD"] else 1.5)
             ))
             
-        # 畫出「目前實倉組合」的綜合 Beta (綠色粗虛線)
         port_weights = [CURRENT_WEIGHTS[a]/100 for a in ["QQQ", "QLD", "TLT", "GLD", "UUP", "SGOV"]]
         port_beta = (roll_beta[["QQQ", "QLD", "TLT", "GLD", "UUP", "SGOV"]] * port_weights).sum(axis=1)
         
