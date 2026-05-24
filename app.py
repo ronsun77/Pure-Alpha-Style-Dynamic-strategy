@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 # ==========================================
 # 0. 網頁基礎設定與終極 CSS 外掛注入
 # ==========================================
-st.set_page_config(page_title="Pure Alpha 戰情室 V7.6", layout="wide")
+st.set_page_config(page_title="Pure Alpha 戰情室 V7.7", layout="wide")
 
 custom_css = """
 <style>
@@ -99,7 +99,7 @@ elif sim_qqq >= cutoff_line: regime_text, r_class, is_bull = "多頭破位警戒
 else: regime_text, r_class, is_bull = "熊市冬眠啟動", "bear-box", False
 
 # ==========================================
-# 3. 優先運算量化矩陣 (取得真實 Beta)
+# 3. 優先運算量化矩陣 (僅用於觀察與分析報告，不干涉目標權重)
 # ==========================================
 asset_metrics = {asset: {"vol": 0.0, "corr": 0.0, "beta": 0.0} for asset in ["QQQ", "QLD", "TLT", "GLD", "UUP", "SGOV"]}
 recent_ret = pd.DataFrame()
@@ -119,22 +119,32 @@ if not df_all.empty:
         asset_metrics[asset] = {"vol": vol, "corr": corr, "beta": beta}
 
 # ==========================================
-# 4. 目標權重分配 (動態結合 Beta 的 K 值縮放)
+# 4. 目標權重分配 (完全對齊 Excel 不對稱縮放公式)
 # ==========================================
 base = BULL_BASE if is_bull else BEAR_BASE
 targets = {}
 for k in ["QQQ", "QLD", "TLT", "GLD", "UUP"]:
-    if not is_bull and k == "QLD": targets[k] = 0.0
+    if not is_bull and k == "QLD": 
+        targets[k] = 0.0
     else:
-        effective_beta = 1.0 if k in ["QQQ", "QLD"] else asset_metrics[k]["beta"]
-        targets[k] = base[k] * max(0.0, 1 + (k_value - 1) * effective_beta)
+        # Excel 核心演算法還原
+        if k in ["QQQ", "QLD"]:
+            multiplier = k_value                     # 100% 承受
+        elif k == "UUP":
+            multiplier = 2.0 - k_value               # 負向反彈
+        elif k in ["TLT", "GLD"]:
+            multiplier = 1.0 + (k_value - 1) * 0.525 # 吸收 52.5% K值溢價
+            
+        targets[k] = base[k] * multiplier
+
+# SGOV 海綿吸收所有剩餘資金
 targets["SGOV"] = max(0.0, 100.0 - sum(targets.values()))
 
 # ==========================================
 # 5. 前端渲染 (HTML UI 上半部)
 # ==========================================
-st.markdown("<h1 style='color:white; font-weight:bold; font-size:36px; margin-bottom:0;'>Pure Alpha 戰情室 V7.6</h1>", unsafe_allow_html=True)
-st.markdown("<p style='color:#94a3b8; font-size:14px; margin-bottom:30px;'>Regime Engine × Dynamic Beta Allocation × Advanced Backtest Engine</p>", unsafe_allow_html=True)
+st.markdown("<h1 style='color:white; font-weight:bold; font-size:36px; margin-bottom:0;'>Pure Alpha 戰情室 V7.7</h1>", unsafe_allow_html=True)
+st.markdown("<p style='color:#94a3b8; font-size:14px; margin-bottom:30px;'>Regime Engine × Excel Logic Allocation × Advanced Backtest Engine</p>", unsafe_allow_html=True)
 
 col1, col2 = st.columns([1, 1])
 
@@ -199,7 +209,7 @@ for asset in ["QQQ", "QLD", "TLT", "GLD", "UUP", "SGOV"]:
 
 html_card3 = f"""
 <div class="cyber-card">
-    <h2>Dynamic Allocation & Correlation Matrix (即時 Beta 聯動)</h2>
+    <h2>Dynamic Allocation & Correlation Matrix</h2>
     <table class="cyber-table">
         <thead>
             <tr><th>資產代碼</th><th>目前實倉</th><th>目標權重</th><th>部位落差</th><th>波動率({window_choice}D)</th><th>相關係數</th><th>Rolling Beta</th><th>執行指令</th></tr>
@@ -235,11 +245,12 @@ if not df_all.empty and len(df_all) > 200:
         
         is_bt_bull = bt_df['QQQ'] >= (bt_df['MA200'] * 0.97)
         
+        # 回測套用 Excel 的常數縮放矩陣
         w_qqq = np.where(is_bt_bull, BULL_BASE["QQQ"] * k_value, BEAR_BASE["QQQ"] * k_value)
         w_qld = np.where(is_bt_bull, BULL_BASE["QLD"] * k_value, BEAR_BASE["QLD"] * k_value)
-        w_tlt = np.where(is_bt_bull, BULL_BASE["TLT"] * k_value, BEAR_BASE["TLT"] * k_value)
-        w_gld = np.where(is_bt_bull, BULL_BASE["GLD"] * k_value, BEAR_BASE["GLD"] * k_value)
-        w_uup = np.where(is_bt_bull, BULL_BASE["UUP"] * k_value, BEAR_BASE["UUP"] * k_value)
+        w_tlt = np.where(is_bt_bull, BULL_BASE["TLT"] * (1.0 + (k_value - 1) * 0.525), BEAR_BASE["TLT"] * (1.0 + (k_value - 1) * 0.525))
+        w_gld = np.where(is_bt_bull, BULL_BASE["GLD"] * (1.0 + (k_value - 1) * 0.525), BEAR_BASE["GLD"] * (1.0 + (k_value - 1) * 0.525))
+        w_uup = np.where(is_bt_bull, BULL_BASE["UUP"] * (2.0 - k_value), BEAR_BASE["UUP"] * (2.0 - k_value))
         sum_5 = w_qqq + w_qld + w_tlt + w_gld + w_uup
         w_sgov = np.maximum(0, 100.0 - sum_5)
         
@@ -250,17 +261,12 @@ if not df_all.empty and len(df_all) > 200:
         cum_bench = (1 + bt_ret[bench_choice]).cumprod()
         
         total_days = len(cum_port)
-        
-        # 指標運算
         total_ret = cum_port.iloc[-1] - 1
         bench_total_ret = cum_bench.iloc[-1] - 1
-        
         cagr = (cum_port.iloc[-1] ** (252 / total_days)) - 1
         bench_cagr = (cum_bench.iloc[-1] ** (252 / total_days)) - 1
-        
         mdd = ((cum_port / cum_port.cummax()) - 1).min()
         bench_mdd = ((cum_bench / cum_bench.cummax()) - 1).min()
-        
         bt_vol = port_daily_ret.std() * np.sqrt(252)
         bench_vol = bt_ret[bench_choice].std() * np.sqrt(252)
         
@@ -281,7 +287,6 @@ if not df_all.empty and len(df_all) > 200:
         )
         st.plotly_chart(fig, use_container_width=True)
         
-        # 5 大核心回測指標
         c1, c2, c3, c4, c5 = st.columns(5)
         c1.metric("總報酬率 (Total Ret)", f"{total_ret*100:.2f}%", f"大盤 {bench_total_ret*100:.2f}%")
         c2.metric("年化報酬 (CAGR)", f"{cagr*100:.2f}%", f"大盤 {bench_cagr*100:.2f}%")
