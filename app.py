@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 # ==========================================
 # 0. 網頁基礎設定與終極 CSS
 # ==========================================
-st.set_page_config(page_title="Pure Alpha 戰情室 V8.1", layout="wide")
+st.set_page_config(page_title="Pure Alpha 戰情室 V8.2", layout="wide")
 
 custom_css = """
 <style>
@@ -39,6 +39,7 @@ st.markdown(custom_css, unsafe_allow_html=True)
 # ==========================================
 # 1. 核心參數與資料下載
 # ==========================================
+PRICE_COLS = ["QQQ", "QLD", "TLT", "GLD", "UUP", "SGOV", "SPY"]
 CURRENT_WEIGHTS = {"QQQ": 28.71, "QLD": 35.66, "TLT": 7.80, "GLD": 7.65, "UUP": 8.00, "SGOV": 12.18}
 BULL_BASE = {"QQQ": 26.0, "QLD": 32.0, "TLT": 7.0, "GLD": 7.0, "UUP": 9.0}
 BEAR_BASE = {"QQQ": 13.8, "QLD": 0.0, "TLT": 9.9, "GLD": 10.1, "UUP": 24.5}
@@ -47,9 +48,8 @@ CHART_COLORS = {"QQQ": "#38bdf8", "QLD": "#818cf8", "TLT": "#f472b6", "GLD": "#f
 
 @st.cache_data(ttl=3600)
 def load_data():
-    tickers = ["QQQ", "QLD", "TLT", "GLD", "UUP", "SGOV", "SPY"]
     data_dict = {}
-    for t in tickers:
+    for t in PRICE_COLS:
         try:
             df = yf.download(t, period="10y", progress=False)
             if 'Close' in df.columns:
@@ -65,32 +65,23 @@ df_all = load_data()
 # ==========================================
 # 2. 雙門檻狀態機 (Hysteresis Regime Engine)
 # ==========================================
-# 計算技術指標
 df_all['MA200'] = df_all['QQQ'].rolling(200).mean()
 df_all['SPY_Max'] = df_all['SPY'].cummax()
 df_all['SPY_DD'] = df_all['SPY'] / df_all['SPY_Max'] - 1
 
-# 透過迴圈建立記憶狀態機 (解決雙巴問題)
 bull_states = []
-current_bull = True # 假設最開始為牛市
+current_bull = True 
 
 for i in range(len(df_all)):
     q = df_all['QQQ'].iloc[i]
     ma = df_all['MA200'].iloc[i]
-    
     if pd.isna(ma):
         bull_states.append(True)
         continue
-        
     if current_bull:
-        # 牛市防禦：跌破 0.97 進入熊市
-        if q < ma * 0.97:
-            current_bull = False
+        if q < ma * 0.97: current_bull = False
     else:
-        # 熊市買回：必須突破 1.04 才能重返牛市 (解決微幅反彈假訊號)
-        if q >= ma * 1.04:
-            current_bull = True
-            
+        if q >= ma * 1.04: current_bull = True
     bull_states.append(current_bull)
 
 df_all['is_bull'] = bull_states
@@ -110,15 +101,14 @@ threshold = st.sidebar.slider("最小換倉門檻 (%)", 0.5, 5.0, 2.0, step=0.1)
 bench_choice = st.sidebar.selectbox("對標基準", ["QQQ", "SPY"])
 window_choice = st.sidebar.selectbox("滾動週期", [21, 63, 126], index=0)
 
-# 使用狀態機判定當前 UI 狀態 (結合昨天的記憶)
 last_state = is_bull_hist.iloc[-2] if len(is_bull_hist) > 1 else True
 
-if last_state: # 昨天是牛市
+if last_state: 
     if sim_qqq < sim_ma200 * 0.97:
         regime_text, r_class, is_bull = "熊市冬眠啟動 (跌破 0.97 斷頭台)", "bear-box", False
     else:
         regime_text, r_class, is_bull = "核心進攻模式", "bull-box", True
-else: # 昨天是熊市
+else: 
     if sim_qqq >= sim_ma200 * 1.04:
         regime_text, r_class, is_bull = "重返牛市 (強勢突破 1.04)", "bull-box", True
     else:
@@ -126,7 +116,6 @@ else: # 昨天是熊市
 
 ratio = sim_qqq / sim_ma200 if sim_ma200 > 0 else 1.0
 
-# 建立全歷史目標權重矩陣 (給 Beta 圖表與回測共用)
 mult_qqq_qld = k_value
 mult_tlt_gld = 1.0 + (k_value - 1) * 0.525
 mult_uup = 2.0 - k_value
@@ -135,9 +124,6 @@ w_qqq_tgt = np.where(is_bull_hist, BULL_BASE["QQQ"] * mult_qqq_qld, BEAR_BASE["Q
 w_tlt_tgt = np.where(is_bull_hist, BULL_BASE["TLT"] * mult_tlt_gld, BEAR_BASE["TLT"])
 w_gld_tgt = np.where(is_bull_hist, BULL_BASE["GLD"] * mult_tlt_gld, BEAR_BASE["GLD"])
 w_uup_tgt = np.where(is_bull_hist, BULL_BASE["UUP"] * mult_uup, BEAR_BASE["UUP"])
-
-# 左側抄底邏輯預留 (SPX DD 19%/30%)
-# 未來可在這裡加入： np.where(df_all['SPY_DD'] <= -0.19, 特定權重, 預設權重)
 w_qld_tgt = np.where(is_bull_hist, BULL_BASE["QLD"] * mult_qqq_qld, BEAR_BASE["QLD"]) 
 w_sgov_tgt = np.maximum(0, 100.0 - (w_qqq_tgt + w_qld_tgt + w_tlt_tgt + w_gld_tgt + w_uup_tgt))
 
@@ -151,7 +137,7 @@ targets = (tgt_weights_df.loc[df_all.index[-1]] * 100).to_dict()
 # ==========================================
 # 4. 儀表板 UI 渲染
 # ==========================================
-st.markdown("<h1 style='color:white;'>Pure Alpha 戰情室 V8.1</h1>", unsafe_allow_html=True)
+st.markdown("<h1 style='color:white;'>Pure Alpha 戰情室 V8.2</h1>", unsafe_allow_html=True)
 col1, col2 = st.columns([1, 1])
 with col1:
     spy_dd_html = f"{df_all['SPY_DD'].iloc[-1] * 100:.2f}%" if not df_all.empty else "-9.79%"
@@ -168,7 +154,8 @@ with col1:
     st.markdown(html_card1.replace('\n', ''), unsafe_allow_html=True)
 
 with col2:
-    recent_ret = df_all.pct_change().tail(window_choice).dropna()
+    # 修正點 1：只對 PRICE_COLS 計算漲跌幅
+    recent_ret = df_all[PRICE_COLS].pct_change().tail(window_choice).dropna()
     w_array = np.array([targets[a] / 100 for a in ["QQQ", "QLD", "TLT", "GLD", "UUP", "SGOV"]])
     cov_matrix = recent_ret[["QQQ", "QLD", "TLT", "GLD", "UUP", "SGOV"]].cov() * 252
     p_vol = np.sqrt(np.dot(w_array.T, np.dot(cov_matrix, w_array)))
@@ -208,7 +195,7 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 5. 視覺化圖表區塊 (完美顯示 Beta 下墜)
+# 5. 視覺化圖表區塊
 # ==========================================
 col_pie, col_beta = st.columns([1, 2.2])
 
@@ -222,7 +209,8 @@ with col_beta:
     st.markdown(f"<h2 style='color: #38bdf8; font-size: 18px; border-left: 4px solid #38bdf8; padding-left: 10px; margin-bottom: 10px;'>動態 Beta 趨勢 (即時還原歷史狀態)</h2>", unsafe_allow_html=True)
     fig_beta = go.Figure()
     
-    ret_all = df_all.pct_change().dropna()
+    # 修正點 2：只對 PRICE_COLS 計算漲跌幅
+    ret_all = df_all[PRICE_COLS].pct_change().dropna()
     roll_cov = ret_all.rolling(window=window_choice).cov(ret_all[bench_choice])
     roll_var = ret_all[bench_choice].rolling(window=window_choice).var()
     roll_beta = roll_cov.div(roll_var, axis=0).dropna().tail(504)
@@ -230,7 +218,6 @@ with col_beta:
     for asset in ["QQQ", "QLD", "TLT", "GLD", "UUP", "SGOV"]:
         fig_beta.add_trace(go.Scatter(x=roll_beta.index, y=roll_beta[asset], mode='lines', name=asset, line=dict(color=CHART_COLORS[asset], width=1.5, dash='dot')))
     
-    # 組合 Beta 乘上當天的「真實歷史目標權重」，展現斷頭台防禦效果
     w_hist_aligned = tgt_weights_df.loc[roll_beta.index]
     port_beta_dynamic = (roll_beta[["QQQ", "QLD", "TLT", "GLD", "UUP", "SGOV"]] * w_hist_aligned).sum(axis=1)
     
@@ -241,7 +228,7 @@ with col_beta:
 st.markdown("---")
 
 # ==========================================
-# 6. 路徑依賴回測引擎 (含 Threshold 權重漂移)
+# 6. 路徑依賴回測引擎 
 # ==========================================
 st.markdown("<h2 style='color: #38bdf8; font-size: 22px; border-left: 5px solid #38bdf8; padding-left: 10px; margin-bottom: 20px;'>歷史回測與分析引擎 (Path-Dependent)</h2>", unsafe_allow_html=True)
 
@@ -255,7 +242,8 @@ bt_mask = (df_all.index.date >= start_date) & (df_all.index.date <= end_date)
 bt_df = df_all.loc[bt_mask]
 
 if len(bt_df) > 10:
-    bt_ret = bt_df.pct_change().dropna()
+    # 修正點 3：只對 PRICE_COLS 計算漲跌幅
+    bt_ret = bt_df[PRICE_COLS].pct_change().dropna()
     tgt_weights_sub = tgt_weights_df.loc[bt_ret.index]
     
     n_days = len(bt_ret)
@@ -277,7 +265,6 @@ if len(bt_df) > 10:
         if i < n_days - 1:
             tgt_w = tgt_array[i+1]
             deviations = np.abs(drifted_w - tgt_w)
-            # 觸發換倉條件：漂移大於門檻，或是發生牛熊轉換(權重劇烈變化)
             if np.max(deviations) >= threshold_frac:
                 current_w = tgt_w.copy()
                 rebalance_count += 1
