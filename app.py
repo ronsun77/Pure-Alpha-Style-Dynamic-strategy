@@ -46,7 +46,7 @@ custom_css = """
 st.markdown(custom_css, unsafe_allow_html=True)
 
 # ==========================================
-# 1. 核心參數與資料讀取 (擴展至 3 年供回測用)
+# 1. 核心參數與資料讀取
 # ==========================================
 CURRENT_WEIGHTS = {"QQQ": 28.71, "QLD": 35.66, "TLT": 7.80, "GLD": 7.65, "UUP": 8.00, "SGOV": 12.18}
 BULL_BASE = {"QQQ": 26.0, "QLD": 32.0, "TLT": 7.0, "GLD": 7.0, "UUP": 9.0}
@@ -64,19 +64,14 @@ def load_historical_data():
             df = yf.download(t, start=start_date, end=end_date, progress=False)
             if not df.empty:
                 data_dict[t] = df['Close'].dropna().squeeze()
-        except Exception:
-            pass
+        except Exception: pass
     return data_dict
 
 prices_cache = load_historical_data()
-
-if len(prices_cache) > 0:
-    df_all = pd.DataFrame(prices_cache).dropna()
-else:
-    df_all = pd.DataFrame()
+df_all = pd.DataFrame(prices_cache).dropna() if len(prices_cache) > 0 else pd.DataFrame()
 
 # ==========================================
-# 2. 控制面板與演算法 (Sidebar & Logic)
+# 2. 控制面板 (Sidebar)
 # ==========================================
 if not df_all.empty and len(df_all) > 200:
     latest_qqq = float(df_all["QQQ"].iloc[-1])
@@ -103,16 +98,12 @@ elif sim_qqq >= cutoff_line:
 else:
     regime_text, r_class, is_bull = "熊市冬眠啟動", "bear-box", False
 
-base = BULL_BASE if is_bull else BEAR_BASE
-targets = {k: base[k] * k_value if k != "QLD" or is_bull else 0.0 for k in ["QQQ", "QLD", "TLT", "GLD", "UUP"]}
-targets["SGOV"] = max(0.0, 100.0 - sum(targets.values()))
-
 # ==========================================
-# 3. 量化指標矩陣預算 (Volatility, Correlation, Beta)
+# 3. 優先運算量化矩陣 (取得真實 Beta)
 # ==========================================
-asset_metrics = {}
-for asset in ["QQQ", "QLD", "TLT", "GLD", "UUP", "SGOV"]:
-    asset_metrics[asset] = {"vol": 0.0, "corr": 0.0, "beta": 0.0}
+asset_metrics = {asset: {"vol": 0.0, "corr": 0.0, "beta": 0.0} for asset in ["QQQ", "QLD", "TLT", "GLD", "UUP", "SGOV"]}
+recent_ret = pd.DataFrame()
+bench_ret = pd.Series(dtype=float)
 
 if not df_all.empty:
     returns_df = df_all.pct_change().dropna()
@@ -124,15 +115,34 @@ if not df_all.empty:
         a_ret = recent_ret[asset]
         vol = a_ret.std() * np.sqrt(252)
         corr = a_ret.corr(bench_ret) if bench_var > 0 else 0.0
-        cov = a_ret.cov(bench_ret)
-        beta = cov / bench_var if bench_var > 0 else 0.0
+        beta = a_ret.cov(bench_ret) / bench_var if bench_var > 0 else 0.0
         asset_metrics[asset] = {"vol": vol, "corr": corr, "beta": beta}
 
 # ==========================================
-# 4. 前端渲染 (HTML UI)
+# 4. 目標權重分配 (動態結合 Beta 的 K 值縮放)
 # ==========================================
-st.markdown("<h1 style='color:white; font-weight:bold; font-size:36px; margin-bottom:0;'>Pure Alpha 戰情室 V7</h1>", unsafe_allow_html=True)
-st.markdown("<p style='color:#94a3b8; font-size:14px; margin-bottom:30px;'>Regime Engine × Asset Matrix × Backtest Engine</p>", unsafe_allow_html=True)
+base = BULL_BASE if is_bull else BEAR_BASE
+targets = {}
+
+for k in ["QQQ", "QLD", "TLT", "GLD", "UUP"]:
+    if not is_bull and k == "QLD":
+        targets[k] = 0.0
+    else:
+        # 攻擊資產完全承受 K 值拉伸，防禦資產則依據 Beta 動態調節
+        effective_beta = 1.0 if k in ["QQQ", "QLD"] else asset_metrics[k]["beta"]
+        
+        # 核心公式：Target = Base * [1 + (K-1) * Beta]
+        multiplier = max(0.0, 1 + (k_value - 1) * effective_beta)
+        targets[k] = base[k] * multiplier
+
+# 剩餘資金流入 SGOV 海綿
+targets["SGOV"] = max(0.0, 100.0 - sum(targets.values()))
+
+# ==========================================
+# 5. 前端渲染 (HTML UI)
+# ==========================================
+st.markdown("<h1 style='color:white; font-weight:bold; font-size:36px; margin-bottom:0;'>Pure Alpha 戰情室 V7.3</h1>", unsafe_allow_html=True)
+st.markdown("<p style='color:#94a3b8; font-size:14px; margin-bottom:30px;'>Regime Engine × Dynamic Beta Allocation × Backtest Engine</p>", unsafe_allow_html=True)
 
 col1, col2 = st.columns([1, 1])
 
@@ -156,7 +166,7 @@ with col1:
 
 with col2:
     p_vol, p_beta = 0.1582, 1.08
-    if not df_all.empty:
+    if not df_all.empty and not recent_ret.empty:
         w_array = np.array([targets[a] / 100 for a in ["QQQ", "QLD", "TLT", "GLD", "UUP", "SGOV"]])
         cov_matrix = recent_ret[["QQQ", "QLD", "TLT", "GLD", "UUP", "SGOV"]].cov() * 252
         p_vol = np.sqrt(np.dot(w_array.T, np.dot(cov_matrix, w_array)))
@@ -197,7 +207,7 @@ for asset in ["QQQ", "QLD", "TLT", "GLD", "UUP", "SGOV"]:
 
 html_card3 = f"""
 <div class="cyber-card">
-    <h2>Dynamic Allocation & Correlation Matrix (即時整合表)</h2>
+    <h2>Dynamic Allocation & Correlation Matrix (即時 Beta 聯動)</h2>
     <table class="cyber-table">
         <thead>
             <tr><th>資產代碼</th><th>目前實倉</th><th>目標權重</th><th>部位落差</th><th>波動率({window_choice}D)</th><th>相關係數</th><th>Rolling Beta</th><th>執行指令</th></tr>
@@ -209,7 +219,7 @@ html_card3 = f"""
 st.markdown(html_card3.replace('\n', ''), unsafe_allow_html=True)
 
 # ==========================================
-# 5. 歷史回測引擎 (Vectorized Backtest)
+# 6. 歷史回測引擎 (Vectorized Backtest)
 # ==========================================
 st.markdown("<div class='cyber-card' style='padding-bottom:10px;'><h2>歷史回測引擎 (Backtest Engine)</h2>", unsafe_allow_html=True)
 
@@ -250,7 +260,6 @@ if not df_all.empty and len(df_all) > 200:
     fig.add_trace(go.Scatter(x=cum_port.index, y=cum_port.values, mode='lines', name='Pure Alpha (策略)', line=dict(color='#38bdf8', width=2)))
     fig.add_trace(go.Scatter(x=cum_bench.index, y=cum_bench.values, mode='lines', name=f'{bench_choice} (大盤基準)', line=dict(color='#64748b', width=1.5)))
     
-    # 圖表排版更新：加入 Y軸與X軸 標籤設定，並加寬邊距
     fig.update_layout(
         template='plotly_dark', paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
         margin=dict(l=60, r=20, t=30, b=40), height=380,
@@ -266,7 +275,7 @@ if not df_all.empty and len(df_all) > 200:
     c4.metric("回測交易總日數", f"{total_days} 天")
     
     st.plotly_chart(fig, use_container_width=True)
-    st.caption("※ 註：此回測為向量化簡化模型，套用「當前設定之 K 值」與 0.97 斷頭台機制進行歷史軌跡推演，未計入手續費與滑價摩擦。Y 軸代表資金從 1.0 開始成長的倍數淨值。")
+    st.caption("※ 註：此回測為向量化簡化模型，未計入手續費與滑價摩擦。Y 軸代表資金從 1.0 開始成長的倍數淨值。")
 else:
     st.warning("資料載入中，或歷史資料不足 200 天無法啟動回測引擎...")
 
