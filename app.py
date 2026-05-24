@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 # ==========================================
 # 0. 網頁基礎設定與終極 CSS 外掛注入
 # ==========================================
-st.set_page_config(page_title="Pure Alpha 戰情室 V7.7", layout="wide")
+st.set_page_config(page_title="Pure Alpha 戰情室 V7.8", layout="wide")
 
 custom_css = """
 <style>
@@ -17,7 +17,7 @@ custom_css = """
     .cyber-card {
         background: #17233a; border-radius: 20px; padding: 24px;
         box-shadow: 0 4px 25px rgba(0,0,0,0.35); border: 1px solid #24334d;
-        margin-bottom: 20px; color: #e2e8f0;
+        margin-bottom: 20px; color: #e2e8f0; height: 100%;
     }
     .cyber-card h2 { color: #38bdf8; margin-bottom: 20px; font-size: 20px; border-left: 4px solid #38bdf8; padding-left: 10px; }
     .cyber-card h3 { color: #facc15; font-size: 16px; margin-top: 15px; margin-bottom: 10px; }
@@ -58,6 +58,8 @@ CURRENT_WEIGHTS = {"QQQ": 28.71, "QLD": 35.66, "TLT": 7.80, "GLD": 7.65, "UUP": 
 BULL_BASE = {"QQQ": 26.0, "QLD": 32.0, "TLT": 7.0, "GLD": 7.0, "UUP": 9.0}
 BEAR_BASE = {"QQQ": 13.8, "QLD": 0.0, "TLT": 9.9, "GLD": 10.1, "UUP": 24.5}
 ASSET_ROLES = {"QQQ": "核心成長引擎", "QLD": "動能槓桿放大", "TLT": "長債負相關避險", "GLD": "抗通膨終極防禦", "UUP": "美元流動性避險", "SGOV": "流動性海綿池"}
+# 視覺化專屬配色
+CHART_COLORS = {"QQQ": "#38bdf8", "QLD": "#818cf8", "TLT": "#f472b6", "GLD": "#facc15", "UUP": "#ef4444", "SGOV": "#94a3b8"}
 
 @st.cache_data(ttl=3600)
 def load_historical_data():
@@ -99,15 +101,16 @@ elif sim_qqq >= cutoff_line: regime_text, r_class, is_bull = "多頭破位警戒
 else: regime_text, r_class, is_bull = "熊市冬眠啟動", "bear-box", False
 
 # ==========================================
-# 3. 優先運算量化矩陣 (僅用於觀察與分析報告，不干涉目標權重)
+# 3. 優先運算量化矩陣 (取得真實 Beta)
 # ==========================================
 asset_metrics = {asset: {"vol": 0.0, "corr": 0.0, "beta": 0.0} for asset in ["QQQ", "QLD", "TLT", "GLD", "UUP", "SGOV"]}
 recent_ret = pd.DataFrame()
 bench_ret = pd.Series(dtype=float)
+returns_df_full = pd.DataFrame()
 
 if not df_all.empty:
-    returns_df = df_all.pct_change().dropna()
-    recent_ret = returns_df.tail(window_choice)
+    returns_df_full = df_all.pct_change().dropna()
+    recent_ret = returns_df_full.tail(window_choice)
     bench_ret = recent_ret[bench_choice]
     bench_var = bench_ret.var()
     
@@ -127,24 +130,17 @@ for k in ["QQQ", "QLD", "TLT", "GLD", "UUP"]:
     if not is_bull and k == "QLD": 
         targets[k] = 0.0
     else:
-        # Excel 核心演算法還原
-        if k in ["QQQ", "QLD"]:
-            multiplier = k_value                     # 100% 承受
-        elif k == "UUP":
-            multiplier = 2.0 - k_value               # 負向反彈
-        elif k in ["TLT", "GLD"]:
-            multiplier = 1.0 + (k_value - 1) * 0.525 # 吸收 52.5% K值溢價
-            
+        if k in ["QQQ", "QLD"]: multiplier = k_value
+        elif k == "UUP": multiplier = 2.0 - k_value
+        elif k in ["TLT", "GLD"]: multiplier = 1.0 + (k_value - 1) * 0.525
         targets[k] = base[k] * multiplier
-
-# SGOV 海綿吸收所有剩餘資金
 targets["SGOV"] = max(0.0, 100.0 - sum(targets.values()))
 
 # ==========================================
 # 5. 前端渲染 (HTML UI 上半部)
 # ==========================================
-st.markdown("<h1 style='color:white; font-weight:bold; font-size:36px; margin-bottom:0;'>Pure Alpha 戰情室 V7.7</h1>", unsafe_allow_html=True)
-st.markdown("<p style='color:#94a3b8; font-size:14px; margin-bottom:30px;'>Regime Engine × Excel Logic Allocation × Advanced Backtest Engine</p>", unsafe_allow_html=True)
+st.markdown("<h1 style='color:white; font-weight:bold; font-size:36px; margin-bottom:0;'>Pure Alpha 戰情室 V7.8</h1>", unsafe_allow_html=True)
+st.markdown("<p style='color:#94a3b8; font-size:14px; margin-bottom:30px;'>Regime Engine × Visual Dashboard × Advanced Backtest Engine</p>", unsafe_allow_html=True)
 
 col1, col2 = st.columns([1, 1])
 
@@ -187,6 +183,7 @@ with col2:
     """
     st.markdown(html_card2.replace('\n', ''), unsafe_allow_html=True)
 
+# 配置與矩陣表 (Row 2)
 table_rows = ""
 for asset in ["QQQ", "QLD", "TLT", "GLD", "UUP", "SGOV"]:
     cur, tgt = CURRENT_WEIGHTS[asset], targets[asset]
@@ -208,7 +205,7 @@ for asset in ["QQQ", "QLD", "TLT", "GLD", "UUP", "SGOV"]:
     table_rows += f'<tr style="{bg_color}"><td style="text-align:left; padding-left:15px;"><b>{asset}</b> <span style="color:#64748b; font-size:11px;">{ASSET_ROLES[asset]}</span></td><td style="font-family:monospace;">{cur:.2f}%</td><td style="font-family:monospace; font-weight:bold; color:white;">{tgt:.2f}%</td><td style="font-family:monospace; color:{diff_color};">{diff:+.2f}%</td><td style="font-family:monospace; color:#38bdf8;">{vol_str}</td><td style="font-family:monospace; color:{corr_color};">{corr:.2f}</td><td style="font-family:monospace;">{beta_str}</td><td><span class="badge-action {act_class}">{action}</span></td></tr>'
 
 html_card3 = f"""
-<div class="cyber-card">
+<div class="cyber-card" style="margin-bottom:20px;">
     <h2>Dynamic Allocation & Correlation Matrix</h2>
     <table class="cyber-table">
         <thead>
@@ -221,7 +218,58 @@ html_card3 = f"""
 st.markdown(html_card3.replace('\n', ''), unsafe_allow_html=True)
 
 # ==========================================
-# 6. 歷史回測引擎與動態分析報告
+# 6. 視覺化模組 (Pie Chart & Rolling Beta Chart)
+# ==========================================
+col_pie, col_beta = st.columns([1, 2.2])
+
+with col_pie:
+    st.markdown("<div class='cyber-card' style='padding-bottom:5px; height:430px;'><h2>目標資產配比</h2>", unsafe_allow_html=True)
+    pie_labels = list(targets.keys())
+    pie_values = list(targets.values())
+    pie_colors = [CHART_COLORS[l] for l in pie_labels]
+    
+    fig_pie = go.Figure(data=[go.Pie(
+        labels=pie_labels, values=pie_values, hole=.45, 
+        textinfo='label+percent', textposition='outside',
+        marker=dict(colors=pie_colors, line=dict(color='#17233a', width=3))
+    )])
+    fig_pie.update_layout(
+        template='plotly_dark', paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', 
+        margin=dict(l=20, r=20, t=10, b=20), height=320, showlegend=False
+    )
+    st.plotly_chart(fig_pie, use_container_width=True)
+    st.markdown("</div>", unsafe_allow_html=True)
+
+with col_beta:
+    st.markdown(f"<div class='cyber-card' style='padding-bottom:5px; height:430px;'><h2>各資產 Rolling Beta 趨勢 (近2年)</h2>", unsafe_allow_html=True)
+    fig_beta = go.Figure()
+    
+    if not returns_df_full.empty:
+        # 計算時間序列的滾動 Beta
+        roll_cov = returns_df_full.rolling(window=window_choice).cov(returns_df_full[bench_choice])
+        roll_var = returns_df_full[bench_choice].rolling(window=window_choice).var()
+        roll_beta = roll_cov.div(roll_var, axis=0).dropna().tail(504) # 繪製近兩年資料(252*2)
+        
+        for asset in ["QQQ", "QLD", "TLT", "GLD", "UUP", "SGOV"]:
+            fig_beta.add_trace(go.Scatter(
+                x=roll_beta.index, y=roll_beta[asset], mode='lines', 
+                name=asset, line=dict(color=CHART_COLORS[asset], width=2 if asset in ["QQQ","QLD"] else 1.5)
+            ))
+            
+        fig_beta.update_layout(
+            template='plotly_dark', paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+            margin=dict(l=40, r=20, t=10, b=40), height=320,
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            yaxis_title=f"Beta ({window_choice}D)"
+        )
+        st.plotly_chart(fig_beta, use_container_width=True)
+    else:
+        st.warning("資料量不足以繪製趨勢圖...")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+# ==========================================
+# 7. 歷史回測引擎與動態分析報告
 # ==========================================
 st.markdown("<div class='cyber-card' style='padding-bottom:10px;'><h2>歷史回測與分析引擎 (Backtest Engine)</h2>", unsafe_allow_html=True)
 
