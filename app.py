@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 # ==========================================
 # 0. 網頁基礎設定與終極 CSS 外掛注入
 # ==========================================
-st.set_page_config(page_title="Pure Alpha 戰情室 V7.4", layout="wide")
+st.set_page_config(page_title="Pure Alpha 戰情室 V7.5", layout="wide")
 
 custom_css = """
 <style>
@@ -62,12 +62,11 @@ ASSET_ROLES = {"QQQ": "核心成長引擎", "QLD": "動能槓桿放大", "TLT": 
 @st.cache_data(ttl=3600)
 def load_historical_data():
     tickers = ["QQQ", "QLD", "TLT", "GLD", "UUP", "SGOV", "SPY"]
-    end_date = datetime.now()
-    start_date = end_date - timedelta(days=365 * 4) # 加長抓取時間確保有足夠樣本
     data_dict = {}
     for t in tickers:
         try:
-            df = yf.download(t, start=start_date, end=end_date, progress=False)
+            # 修改為抓取 10 年資料，確保有足夠長度給 SGOV 上市與 MA200 暖機
+            df = yf.download(t, period="10y", progress=False)
             if not df.empty:
                 data_dict[t] = df['Close'].dropna().squeeze()
         except Exception: pass
@@ -135,7 +134,7 @@ targets["SGOV"] = max(0.0, 100.0 - sum(targets.values()))
 # ==========================================
 # 5. 前端渲染 (HTML UI 上半部)
 # ==========================================
-st.markdown("<h1 style='color:white; font-weight:bold; font-size:36px; margin-bottom:0;'>Pure Alpha 戰情室 V7.4</h1>", unsafe_allow_html=True)
+st.markdown("<h1 style='color:white; font-weight:bold; font-size:36px; margin-bottom:0;'>Pure Alpha 戰情室 V7.5</h1>", unsafe_allow_html=True)
 st.markdown("<p style='color:#94a3b8; font-size:14px; margin-bottom:30px;'>Regime Engine × Dynamic Beta Allocation × Advanced Backtest Engine</p>", unsafe_allow_html=True)
 
 col1, col2 = st.columns([1, 1])
@@ -222,7 +221,7 @@ if not df_all.empty and len(df_all) > 200:
     bt_df_full['MA200'] = bt_df_full['QQQ'].rolling(200).mean()
     bt_df_full = bt_df_full.dropna()
     
-    # 建立日期選擇器
+    # 建立日期選擇器 (此時 min_date 已經推到 2021 年初了)
     min_date = bt_df_full.index.min().date()
     max_date = bt_df_full.index.max().date()
     
@@ -230,7 +229,6 @@ if not df_all.empty and len(df_all) > 200:
     with col_d1: start_date = st.date_input("回測起始日", min_date, min_value=min_date, max_value=max_date)
     with col_d2: end_date = st.date_input("回測結束日", max_date, min_value=min_date, max_value=max_date)
     
-    # 根據選擇區間切割資料
     bt_df = bt_df_full.loc[pd.to_datetime(start_date):pd.to_datetime(end_date)]
     
     if len(bt_df) > 10:
@@ -253,7 +251,6 @@ if not df_all.empty and len(df_all) > 200:
         cum_port = (1 + port_daily_ret).cumprod()
         cum_bench = (1 + bt_ret[bench_choice]).cumprod()
         
-        # 運算指標
         total_days = len(cum_port)
         cagr = (cum_port.iloc[-1] ** (252 / total_days)) - 1
         mdd = ((cum_port / cum_port.cummax()) - 1).min()
@@ -263,7 +260,6 @@ if not df_all.empty and len(df_all) > 200:
         bench_mdd = ((cum_bench / cum_bench.cummax()) - 1).min()
         bench_vol = bt_ret[bench_choice].std() * np.sqrt(252)
         
-        # 夏普值估算 (假設無風險利率 4%)
         rf = 0.04
         sharpe = (cagr - rf) / bt_vol if bt_vol > 0 else 0
         bench_sharpe = (bench_cagr - rf) / bench_vol if bench_vol > 0 else 0
@@ -297,7 +293,7 @@ if not df_all.empty and len(df_all) > 200:
         mdd_text = f"<span class='{'highlight-up' if mdd > bench_mdd else 'highlight-down'}'>{'優於' if mdd > bench_mdd else '弱於'}大盤 ({bench_mdd*100:.2f}%)</span>"
         sharpe_text = f"代表策略在承擔相同風險下，具備<span class='{'highlight-up' if sharpe > bench_sharpe else 'highlight-down'}'>{'更強' if sharpe > bench_sharpe else '較弱'}的超額報酬獲取能力</span>。"
         
-        conclusion = "策略成功發揮了「漲時跟隨、跌時抗跌」的 Pure Alpha 核心精神，展現了頂級的風控能力。" if (cagr > bench_cagr and mdd > bench_mdd) else "在這段區間內，策略呈現了截然不同的風險特徵。建議觀察特定市場事件對資產相關性的影響。"
+        conclusion = "策略成功發揮了「漲時跟隨、跌時抗跌」的 Pure Alpha 核心精神，展現了頂級的風控能力。" if (cagr > bench_cagr and mdd > bench_mdd) else "在這段區間內，策略呈現了不同的風險特徵，請觀察特定市場事件對資產相關性的影響。"
         
         report_html = f"""
         <div style="background: rgba(23, 35, 58, 0.5); padding: 20px; border-radius: 12px; margin-top: 20px; border-left: 5px solid #38bdf8;">
