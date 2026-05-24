@@ -57,7 +57,7 @@ ASSET_ROLES = {"QQQ": "核心成長引擎", "QLD": "動能槓桿放大", "TLT": 
 def load_historical_data():
     tickers = ["QQQ", "QLD", "TLT", "GLD", "UUP", "SGOV", "SPY"]
     end_date = datetime.now()
-    start_date = end_date - timedelta(days=365 * 3) # 抓取 3 年資料以利回測與 MA200
+    start_date = end_date - timedelta(days=365 * 3)
     data_dict = {}
     for t in tickers:
         try:
@@ -70,7 +70,6 @@ def load_historical_data():
 
 prices_cache = load_historical_data()
 
-# 將所有價格對齊成單一 DataFrame，方便回測與矩陣計算
 if len(prices_cache) > 0:
     df_all = pd.DataFrame(prices_cache).dropna()
 else:
@@ -104,7 +103,6 @@ elif sim_qqq >= cutoff_line:
 else:
     regime_text, r_class, is_bull = "熊市冬眠啟動", "bear-box", False
 
-# 計算目標權重
 base = BULL_BASE if is_bull else BEAR_BASE
 targets = {k: base[k] * k_value if k != "QLD" or is_bull else 0.0 for k in ["QQQ", "QLD", "TLT", "GLD", "UUP"]}
 targets["SGOV"] = max(0.0, 100.0 - sum(targets.values()))
@@ -128,7 +126,6 @@ if not df_all.empty:
         corr = a_ret.corr(bench_ret) if bench_var > 0 else 0.0
         cov = a_ret.cov(bench_ret)
         beta = cov / bench_var if bench_var > 0 else 0.0
-        
         asset_metrics[asset] = {"vol": vol, "corr": corr, "beta": beta}
 
 # ==========================================
@@ -139,7 +136,6 @@ st.markdown("<p style='color:#94a3b8; font-size:14px; margin-bottom:30px;'>Regim
 
 col1, col2 = st.columns([1, 1])
 
-# 卡片 1: 市場狀態
 with col1:
     spy_dd_html = "-9.79%"
     if "SPY" in df_all.columns:
@@ -158,14 +154,12 @@ with col1:
     """
     st.markdown(html_card1.replace('\n', ''), unsafe_allow_html=True)
 
-# 卡片 2: 組合風險引擎
 with col2:
     p_vol, p_beta = 0.1582, 1.08
     if not df_all.empty:
         w_array = np.array([targets[a] / 100 for a in ["QQQ", "QLD", "TLT", "GLD", "UUP", "SGOV"]])
         cov_matrix = recent_ret[["QQQ", "QLD", "TLT", "GLD", "UUP", "SGOV"]].cov() * 252
         p_vol = np.sqrt(np.dot(w_array.T, np.dot(cov_matrix, w_array)))
-        
         port_ret = recent_ret[["QQQ", "QLD", "TLT", "GLD", "UUP", "SGOV"]].dot(w_array)
         p_beta = (port_ret.cov(bench_ret) * 252) / (bench_ret.var() * 252) if bench_ret.var() > 0 else 0
 
@@ -181,7 +175,6 @@ with col2:
     """
     st.markdown(html_card2.replace('\n', ''), unsafe_allow_html=True)
 
-# 卡片 3: 終極整合配置與矩陣表 (橫跨滿版)
 table_rows = ""
 for asset in ["QQQ", "QLD", "TLT", "GLD", "UUP", "SGOV"]:
     cur, tgt = CURRENT_WEIGHTS[asset], targets[asset]
@@ -195,7 +188,6 @@ for asset in ["QQQ", "QLD", "TLT", "GLD", "UUP", "SGOV"]:
     diff_color = "#22c55e" if diff >= 0 else "#ef4444"
     bg_color = "background: rgba(56, 189, 248, 0.05);" if asset == "SGOV" else ""
     
-    # 矩陣數值格式化
     vol_str = f"{asset_metrics[asset]['vol']*100:.1f}%"
     corr = asset_metrics[asset]['corr']
     corr_color = "#22c55e" if corr > 0.4 else ("#ef4444" if corr < -0.1 else "#facc15")
@@ -222,19 +214,16 @@ st.markdown(html_card3.replace('\n', ''), unsafe_allow_html=True)
 st.markdown("<div class='cyber-card' style='padding-bottom:10px;'><h2>歷史回測引擎 (Backtest Engine)</h2>", unsafe_allow_html=True)
 
 if not df_all.empty and len(df_all) > 200:
-    # 進行向量化回測 (不含交易成本，假設每日 Rebalance 檢視)
     bt_df = df_all.copy()
     bt_df['MA200'] = bt_df['QQQ'].rolling(200).mean()
-    bt_df = bt_df.dropna() # 剃除前 200 天沒有 MA 的日子
+    bt_df = bt_df.dropna()
     bt_ret = bt_df.pct_change().dropna()
     bt_df = bt_df.loc[bt_ret.index]
     
-    # 依據歷史每日價格計算 Regime
-    is_bt_bull = bt_df['QQQ'] >= (bt_df['MA200'] * 0.97) # 只要沒跌破斷頭台，皆以牛市 Base 乘 K 值 (簡化模擬)
+    is_bt_bull = bt_df['QQQ'] >= (bt_df['MA200'] * 0.97)
     
-    # 計算每日權重序列 (使用當前輸入的 K_value)
     w_qqq = np.where(is_bt_bull, BULL_BASE["QQQ"] * k_value, BEAR_BASE["QQQ"] * k_value)
-    w_qld = np.where(is_bt_bull, BULL_BASE["QLD"] * k_value, BEAR_BASE["QLD"] * k_value) # 熊市為 0
+    w_qld = np.where(is_bt_bull, BULL_BASE["QLD"] * k_value, BEAR_BASE["QLD"] * k_value)
     w_tlt = np.where(is_bt_bull, BULL_BASE["TLT"] * k_value, BEAR_BASE["TLT"] * k_value)
     w_gld = np.where(is_bt_bull, BULL_BASE["GLD"] * k_value, BEAR_BASE["GLD"] * k_value)
     w_uup = np.where(is_bt_bull, BULL_BASE["UUP"] * k_value, BEAR_BASE["UUP"] * k_value)
@@ -242,41 +231,42 @@ if not df_all.empty and len(df_all) > 200:
     sum_5 = w_qqq + w_qld + w_tlt + w_gld + w_uup
     w_sgov = np.maximum(0, 100.0 - sum_5)
     
-    # 計算投資組合每日報酬
     port_daily_ret = (w_qqq * bt_ret['QQQ'] + w_qld * bt_ret['QLD'] + w_tlt * bt_ret['TLT'] + 
                       w_gld * bt_ret['GLD'] + w_uup * bt_ret['UUP'] + w_sgov * bt_ret['SGOV']) / 100.0
     
-    # 累積淨值
     cum_port = (1 + port_daily_ret).cumprod()
     cum_bench = (1 + bt_ret[bench_choice]).cumprod()
     
-    # 計算回測指標
     total_days = len(cum_port)
     cagr = (cum_port.iloc[-1] ** (252 / total_days)) - 1
     mdd = ((cum_port / cum_port.cummax()) - 1).min()
+    bt_vol = port_daily_ret.std() * np.sqrt(252)
     
     bench_cagr = (cum_bench.iloc[-1] ** (252 / total_days)) - 1
     bench_mdd = ((cum_bench / cum_bench.cummax()) - 1).min()
+    bench_vol = bt_ret[bench_choice].std() * np.sqrt(252)
     
-    # 繪製 Plotly 圖表
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=cum_port.index, y=cum_port.values, mode='lines', name='Pure Alpha', line=dict(color='#38bdf8', width=2)))
-    fig.add_trace(go.Scatter(x=cum_bench.index, y=cum_bench.values, mode='lines', name=f'{bench_choice} (基準)', line=dict(color='#64748b', width=1.5)))
+    fig.add_trace(go.Scatter(x=cum_port.index, y=cum_port.values, mode='lines', name='Pure Alpha (策略)', line=dict(color='#38bdf8', width=2)))
+    fig.add_trace(go.Scatter(x=cum_bench.index, y=cum_bench.values, mode='lines', name=f'{bench_choice} (大盤基準)', line=dict(color='#64748b', width=1.5)))
     
+    # 圖表排版更新：加入 Y軸與X軸 標籤設定，並加寬邊距
     fig.update_layout(
         template='plotly_dark', paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-        margin=dict(l=0, r=0, t=10, b=0), height=350,
-        legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01)
+        margin=dict(l=60, r=20, t=30, b=40), height=380,
+        legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01),
+        yaxis_title="累積資金淨值 (Initial = 1.0)",
+        xaxis_title="回測時間軸"
     )
     
-    # 顯示指標與圖表
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("回測區間", f"近 {total_days} 個交易日")
-    c2.metric("策略年化報酬 (CAGR)", f"{cagr*100:.2f}%", f"勝過基準 {(cagr - bench_cagr)*100:.2f}%")
-    c3.metric("策略最大回撤 (MDD)", f"{mdd*100:.2f}%", f"基準回撤 {bench_mdd*100:.2f}%", delta_color="inverse")
-    c4.caption("※ 註：此回測為向量化簡化模型，套用「當前設定之 K 值」與 0.97 斷頭台機制進行歷史軌跡推演，未計入手續費與滑價摩擦成本。")
+    c1.metric("策略年化報酬 (CAGR)", f"{cagr*100:.2f}%", f"勝過大盤 {(cagr - bench_cagr)*100:.2f}%")
+    c2.metric("策略最大回撤 (MDD)", f"{mdd*100:.2f}%", f"大盤回撤 {bench_mdd*100:.2f}%", delta_color="inverse")
+    c3.metric("策略年化波動率 (Vol)", f"{bt_vol*100:.2f}%", f"大盤波動 {bench_vol*100:.2f}%", delta_color="inverse")
+    c4.metric("回測交易總日數", f"{total_days} 天")
     
     st.plotly_chart(fig, use_container_width=True)
+    st.caption("※ 註：此回測為向量化簡化模型，套用「當前設定之 K 值」與 0.97 斷頭台機制進行歷史軌跡推演，未計入手續費與滑價摩擦。Y 軸代表資金從 1.0 開始成長的倍數淨值。")
 else:
     st.warning("資料載入中，或歷史資料不足 200 天無法啟動回測引擎...")
 
