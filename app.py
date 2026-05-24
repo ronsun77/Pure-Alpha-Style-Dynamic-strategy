@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 # ==========================================
 # 0. 網頁基礎設定與終極 CSS
 # ==========================================
-st.set_page_config(page_title="Pure Alpha 戰情室 V8.4", layout="wide")
+st.set_page_config(page_title="Pure Alpha 戰情室 V8.5", layout="wide")
 
 custom_css = """
 <style>
@@ -31,7 +31,7 @@ custom_css = """
     .regime-box { margin-top:20px; padding:15px; border-radius:12px; text-align:center; font-size:18px; font-weight:bold; }
     .bull-box { background: rgba(34,197,94,0.15); border: 1px solid #22c55e; color: #22c55e; }
     .bear-box { background: rgba(239,68,68,0.15); border: 1px solid #ef4444; color: #ef4444; }
-    .neutral-box { background: rgba(250,204,21,0.15); border: 1px solid #facc15; color: #facc15; }
+    .dip-box { background: rgba(56,189,248,0.15); border: 1px solid #38bdf8; color: #38bdf8; }
 </style>
 """
 st.markdown(custom_css, unsafe_allow_html=True)
@@ -63,14 +63,14 @@ def load_data():
 df_all = load_data()
 
 # ==========================================
-# 2. 雙門檻 + 階梯抄底狀態機
+# 2. 雙門檻 + 抄底記憶狀態機 (V8.5 核心升級)
 # ==========================================
 df_all['MA200'] = df_all['QQQ'].rolling(200).mean()
 df_all['SPY_Max'] = df_all['SPY'].cummax()
 df_all['SPY_DD'] = df_all['SPY'] / df_all['SPY_Max'] - 1
 
-bull_states = []
-current_bull = True 
+regime_states = [] # 儲存狀態：0=熊市, 1=牛市, 19=抄底Lv1, 30=抄底Lv2
+current_state = 1 
 
 for i in range(len(df_all)):
     q = df_all['QQQ'].iloc[i]
@@ -78,25 +78,27 @@ for i in range(len(df_all)):
     spy_dd = df_all['SPY_DD'].iloc[i]
     
     if pd.isna(ma):
-        bull_states.append(True)
+        regime_states.append(1)
         continue
+    
+    # 優先判定：是否強制回歸牛市？
+    if q >= ma * 1.04:
+        current_state = 1
+    # 判定：是否觸發更深的抄底？(只進不退，直到回歸牛市)
+    elif spy_dd <= -0.30:
+        current_state = 30
+    elif spy_dd <= -0.19 and current_state != 30: # 若已是Lv2就不降級
+        current_state = 19
+    # 判定：牛市是否跌破均線進入熊市？(未達抄底線)
+    elif current_state == 1 and q < ma * 0.97 and spy_dd > -0.19:
+        current_state = 0
         
-    if current_bull:
-        # 當前是牛市：要切換到熊市，必須跌破 0.97，且 SPY 回撤不到 19%
-        if q < ma * 0.97 and spy_dd > -0.19: 
-            current_bull = False
-    else:
-        # 當前是熊市：如果 QQQ 站回 1.04，或是 SPY 回撤超過 19% (強制切換為進攻抄底)
-        if q >= ma * 1.04 or spy_dd <= -0.19: 
-            current_bull = True
-            
-    bull_states.append(current_bull)
+    regime_states.append(current_state)
 
-df_all['is_bull'] = bull_states
-is_bull_hist = df_all['is_bull']
+df_all['Regime'] = regime_states
 
 # ==========================================
-# 3. 控制面板與即時狀態判定
+# 3. 控制面板與全歷史目標權重矩陣
 # ==========================================
 st.sidebar.markdown("<h2 style='color:#38bdf8;'>動態參數調控</h2>", unsafe_allow_html=True)
 latest_qqq = float(df_all["QQQ"].iloc[-1]) if not df_all.empty else 717.54
@@ -109,44 +111,21 @@ threshold = st.sidebar.slider("最小換倉門檻 (%)", 0.5, 5.0, 2.0, step=0.1)
 bench_choice = st.sidebar.selectbox("對標基準", ["QQQ", "SPY"])
 window_choice = st.sidebar.selectbox("滾動週期", [21, 63, 126], index=0)
 
-last_state = is_bull_hist.iloc[-2] if len(is_bull_hist) > 1 else True
-current_spy_dd = df_all['SPY_DD'].iloc[-1] if not df_all.empty else 0.0
-
-if last_state: 
-    if sim_qqq < sim_ma200 * 0.97 and current_spy_dd > -0.19:
-        regime_text, r_class, is_bull = "熊市冬眠啟動 (跌破 0.97 斷頭台)", "bear-box", False
-    elif current_spy_dd <= -0.30:
-        regime_text, r_class, is_bull = "極度恐慌抄底 (SPX DD > 30%)", "bull-box", True
-    elif current_spy_dd <= -0.19:
-        regime_text, r_class, is_bull = "左側抄底模式 (SPX DD > 19%)", "bull-box", True
-    else:
-        regime_text, r_class, is_bull = "核心進攻模式", "bull-box", True
-else: 
-    if sim_qqq >= sim_ma200 * 1.04:
-        regime_text, r_class, is_bull = "重返牛市 (強勢突破 1.04)", "bull-box", True
-    elif current_spy_dd <= -0.30:
-        regime_text, r_class, is_bull = "極度恐慌抄底 (SPX DD > 30%)", "bull-box", True
-    elif current_spy_dd <= -0.19:
-        regime_text, r_class, is_bull = "左側抄底買回 (SPX DD > 19%)", "bull-box", True
-    else:
-        regime_text, r_class, is_bull = "熊市冬眠中 (須突破 1.04 方可買回)", "bear-box", False
-
-ratio = sim_qqq / sim_ma200 if sim_ma200 > 0 else 1.0
-
-# 建立權重縮放邏輯
+# K 值放大係數
 mult_qqq_qld = k_value
 mult_tlt_gld = 1.0 + (k_value - 1) * 0.525
 mult_uup = 2.0 - k_value
 
-w_qqq_tgt = np.where(is_bull_hist, BULL_BASE["QQQ"] * mult_qqq_qld, BEAR_BASE["QQQ"])
-w_tlt_tgt = np.where(is_bull_hist, BULL_BASE["TLT"] * mult_tlt_gld, BEAR_BASE["TLT"])
-w_gld_tgt = np.where(is_bull_hist, BULL_BASE["GLD"] * mult_tlt_gld, BEAR_BASE["GLD"])
-w_uup_tgt = np.where(is_bull_hist, BULL_BASE["UUP"] * mult_uup, BEAR_BASE["UUP"])
+# 生成全歷史目標權重矩陣 (依據記憶狀態機)
+w_qqq_tgt = np.where(df_all['Regime'] == 0, BEAR_BASE["QQQ"], BULL_BASE["QQQ"] * mult_qqq_qld)
+w_tlt_tgt = np.where(df_all['Regime'] == 0, BEAR_BASE["TLT"], BULL_BASE["TLT"] * mult_tlt_gld)
+w_gld_tgt = np.where(df_all['Regime'] == 0, BEAR_BASE["GLD"], BULL_BASE["GLD"] * mult_tlt_gld)
+w_uup_tgt = np.where(df_all['Regime'] == 0, BEAR_BASE["UUP"], BULL_BASE["UUP"] * mult_uup)
 
-# 階梯式抄底邏輯 (SPX DD 30% 給 25 * K，19% 給 15 * K)
-w_qld_tgt = np.where(df_all['SPY_DD'] <= -0.30, 25.0 * mult_qqq_qld,
-            np.where(df_all['SPY_DD'] <= -0.19, 15.0 * mult_qqq_qld,
-            np.where(is_bull_hist, BULL_BASE["QLD"] * mult_qqq_qld, BEAR_BASE["QLD"])))
+# QLD 抄底階梯權重
+w_qld_tgt = np.where(df_all['Regime'] == 30, 25.0 * mult_qqq_qld,
+            np.where(df_all['Regime'] == 19, 15.0 * mult_qqq_qld,
+            np.where(df_all['Regime'] == 1, BULL_BASE["QLD"] * mult_qqq_qld, BEAR_BASE["QLD"])))
 
 w_sgov_tgt = np.maximum(0, 100.0 - (w_qqq_tgt + w_qld_tgt + w_tlt_tgt + w_gld_tgt + w_uup_tgt))
 
@@ -157,16 +136,37 @@ tgt_weights_df = pd.DataFrame({
 
 targets = (tgt_weights_df.loc[df_all.index[-1]] * 100).to_dict()
 
+# UI 狀態判定
+current_spy_dd = df_all['SPY_DD'].iloc[-1] if not df_all.empty else 0.0
+last_state = df_all['Regime'].iloc[-2] if len(df_all) > 1 else 1
+
+if last_state == 1: # 原本是牛市
+    if current_spy_dd <= -0.30: regime_text, r_class = "極度恐慌抄底鎖定 (SPX DD > 30%)", "dip-box"
+    elif current_spy_dd <= -0.19: regime_text, r_class = "左側抄底鎖定 (SPX DD > 19%)", "dip-box"
+    elif sim_qqq < sim_ma200 * 0.97: regime_text, r_class = "熊市冬眠啟動 (跌破 0.97)", "bear-box"
+    else: regime_text, r_class = "核心進攻模式", "bull-box"
+elif last_state == 0: # 原本是熊市
+    if sim_qqq >= sim_ma200 * 1.04: regime_text, r_class = "重返牛市 (強勢突破 1.04)", "bull-box"
+    elif current_spy_dd <= -0.30: regime_text, r_class = "極度恐慌抄底鎖定 (SPX DD > 30%)", "dip-box"
+    elif current_spy_dd <= -0.19: regime_text, r_class = "左側抄底鎖定 (SPX DD > 19%)", "dip-box"
+    else: regime_text, r_class = "熊市冬眠中 (等待突破 1.04)", "bear-box"
+else: # 原本是抄底模式 (保持鎖定，直到突破1.04)
+    if sim_qqq >= sim_ma200 * 1.04: regime_text, r_class = "抄底成功！重返滿血牛市", "bull-box"
+    elif current_spy_dd <= -0.30: regime_text, r_class = "極度恐慌抄底鎖定 (SPX DD > 30%)", "dip-box"
+    else: regime_text, r_class = "左側抄底建倉鎖定中 (等待牛市)", "dip-box"
+
+ratio = sim_qqq / sim_ma200 if sim_ma200 > 0 else 1.0
+
 # ==========================================
 # 4. 儀表板 UI 渲染
 # ==========================================
-st.markdown("<h1 style='color:white;'>Pure Alpha 戰情室 V8.4</h1>", unsafe_allow_html=True)
+st.markdown("<h1 style='color:white;'>Pure Alpha 戰情室 V8.5</h1>", unsafe_allow_html=True)
 col1, col2 = st.columns([1, 1])
 with col1:
-    spy_dd_html = f"{df_all['SPY_DD'].iloc[-1] * 100:.2f}%" if not df_all.empty else "-9.79%"
+    spy_dd_html = f"{current_spy_dd * 100:.2f}%" if not df_all.empty else "-9.79%"
     html_card1 = f"""
     <div class="cyber-card">
-        <h2>市場 Regime Engine (雙門檻 + 階梯抄底)</h2>
+        <h2>市場 Regime Engine (記憶抄底鎖定)</h2>
         <div class="metric-row"><span class="m-label">QQQ 當前價格</span><span class="m-value c-yellow">{sim_qqq:.2f}</span></div>
         <div class="metric-row"><span class="m-label">QQQ MA200 均線</span><span class="m-value">{sim_ma200:.2f}</span></div>
         <div class="metric-row"><span class="m-label">SPX 當前回撤</span><span class="m-value c-yellow">{spy_dd_html}</span></div>
@@ -188,20 +188,21 @@ with col2:
         <h2>Portfolio Risk Engine ({window_choice}D)</h2>
         <div class="metric-row"><span class="m-label">預估組合年化波動率</span><span class="m-value c-green">{p_vol*100:.2f}%</span></div>
         <div class="metric-row"><span class="m-label">預估組合 Beta (vs {bench_choice})</span><span class="m-value c-yellow">{p_beta:.2f}</span></div>
-        <div class="metric-row"><span class="m-label">遲滯上緣 (牛市買回線)</span><span class="m-value c-green">{sim_ma200 * 1.04:.2f}</span></div>
+        <div class="metric-row"><span class="m-label">遲滯上緣 (牛市滿血線)</span><span class="m-value c-green">{sim_ma200 * 1.04:.2f}</span></div>
         <div class="metric-row"><span class="m-label">風控安全評級</span><span class="m-value">{risk_status}</span></div>
     </div>
     """
     st.markdown(html_card2.replace('\n', ''), unsafe_allow_html=True)
 
 table_rows = ""
+is_bull_now = df_all['Regime'].iloc[-1] == 1
 for asset in ["QQQ", "QLD", "TLT", "GLD", "UUP", "SGOV"]:
     cur, tgt = CURRENT_WEIGHTS[asset], targets[asset]
     diff = tgt - cur
     action, act_class = "HOLD", "badge-hold"
     if diff >= threshold: action, act_class = "BUY", "badge-buy"
     elif diff <= -threshold: action, act_class = "SELL", "badge-sell"
-    if not is_bull and asset == "QLD" and cur > 0: action, act_class = "CRITICAL SELL", "badge-critical"
+    if not is_bull_now and asset == "QLD" and cur > tgt: action, act_class = "REDUCE", "badge-critical"
     
     vol_str = f"{recent_ret[asset].std() * np.sqrt(252) * 100:.1f}%"
     corr = recent_ret[asset].corr(recent_ret[bench_choice])
@@ -321,15 +322,16 @@ if len(bt_df) > 10:
     c4.metric("年化波動率 (Vol)", f"{bt_vol*100:.2f}%", f"大盤波動 {bench_vol*100:.2f}%", delta_color="inverse")
     c5.metric("夏普指標 (Sharpe)", f"{sharpe:.2f}", f"大盤夏普 {bench_sharpe:.2f}")
     
-    bull_days = np.sum(tgt_weights_sub["QLD"] > 0)
-    bear_days = total_days - bull_days
+    bull_days = np.sum(df_all.loc[bt_mask, 'Regime'] == 1)
+    dip_days = np.sum((df_all.loc[bt_mask, 'Regime'] == 19) | (df_all.loc[bt_mask, 'Regime'] == 30))
+    bear_days = np.sum(df_all.loc[bt_mask, 'Regime'] == 0)
     avg_reb_days = total_days // max(1, rebalance_count)
     
     report_html = f"""
     <div style="background: rgba(23, 35, 58, 0.5); padding: 20px; border-radius: 12px; margin-top: 20px; border-left: 5px solid #38bdf8;">
         <h3 style="color: #38bdf8; margin-top: 0; font-size: 18px;">📊 策略深度分析報告 (總交易日: {total_days} 天)</h3>
         <div class="report-text">
-            <p>雙門檻狀態機與階梯抄底發揮作用：在選定的區間內，多頭與抄底進攻期共 <b>{bull_days}</b> 天，觸發空頭冬眠防禦共 <b>{bear_days}</b> 天。</p>
+            <p>在選定的區間內：滿血多頭期 <b>{bull_days}</b> 天，左側抄底期 <b>{dip_days}</b> 天，空頭冬眠防禦共 <b>{bear_days}</b> 天。</p>
             <ul style="margin-top: 10px; margin-bottom: 10px;">
                 <li><b>交易頻率與換倉：</b>在此 <b>{threshold:.1f}%</b> 的換倉門檻設定下，共觸發真實換倉 <b>{rebalance_count}</b> 次 (平均每 {avg_reb_days} 天換倉一次)。</li>
                 <li><b>整體報酬與抗震：</b>創造了 <b>{total_ret*100:.2f}%</b> 的總報酬率。下檔風險控制上，最大回撤鎖定在 <b>{mdd*100:.2f}%</b> (大盤為 {bench_mdd*100:.2f}%)。</li>
