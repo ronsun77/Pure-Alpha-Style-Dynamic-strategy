@@ -12,7 +12,10 @@ st.set_page_config(page_title="Pure Alpha 戰情室 V6", layout="wide")
 # 固定實際現存持倉 (Current Weights)
 CURRENT_WEIGHTS = {"QQQ": 28.71, "QLD": 35.66, "TLT": 7.80, "GLD": 7.65, "UUP": 8.00, "SGOV": 12.18}
 BULL_BASE = {"QQQ": 26.0, "QLD": 32.0, "TLT": 7.0, "GLD": 7.0, "UUP": 9.0}
-BEAR_BASE = {"QQQ": 13.8, "QLD": 0.0,  TLT: 9.9, "GLD": 10.1, "UUP": 24.5}
+
+# [已修復] 加上 "TLT" 的雙引號
+BEAR_BASE = {"QQQ": 13.8, "QLD": 0.0, "TLT": 9.9, "GLD": 10.1, "UUP": 24.5}
+
 ASSET_ROLES = {
     "QQQ": "核心成長引擎", "QLD": "動能槓桿放大", "TLT": "長債負相關避險",
     "GLD": "抗通膨終極防禦", "UUP": "美元流動性避險", "SGOV": "流動性緩衝海綿池"
@@ -62,7 +65,7 @@ threshold = st.sidebar.slider("換倉最小調整門檻 (%)", 0.5, 5.0, 2.0, ste
 
 # 計算防線
 cutoff_line = sim_ma200 * 0.97
-ratio = sim_qqq / sim_ma200
+ratio = sim_qqq / sim_ma200 if sim_ma200 > 0 else 1.0
 
 # ==========================================
 # 3. 中央運算決策引擎
@@ -197,8 +200,8 @@ with col_r1:
         p_var = np.dot(w_array.T, np.dot(cov_matrix, w_array))
         p_vol_computed = np.sqrt(p_var) if p_var > 0 else 0.1582
         
-        # 計算邊際風險貢獻 (Marginal Risk Contribution)
-        mrc = np.dot(cov_matrix, w_array) / p_vol_computed if p_vol_computed > 0 else zeros(len(w_array))
+        # [已修復] 確保 np.zeros 呼叫正確，避免出錯
+        mrc = np.dot(cov_matrix, w_array) / p_vol_computed if p_vol_computed > 0 else np.zeros(len(w_array))
         rc = w_array * mrc
         rc_pct = (rc / rc.sum() * 100) if rc.sum() > 0 else np.zeros(len(w_array))
         
