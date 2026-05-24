@@ -158,14 +158,13 @@ with col1:
         <div class="regime-box {r_class}">{regime_text}</div>
     </div>
     """
-    st.markdown(html_card1, unsafe_allow_html=True)
+    st.markdown(html_card1.replace('\n', ''), unsafe_allow_html=True)
 
 # 卡片 2: 風險引擎
 with col2:
     p_vol, p_beta = 0.1582, 1.08
     if bench_choice in prices_cache and "QQQ" in prices_cache:
         try:
-            # 矩陣運算核心
             returns_df = pd.DataFrame({k: v.pct_change() for k, v in prices_cache.items() if k in targets}).dropna()
             recent_ret = returns_df.tail(window_choice)
             cov_matrix = recent_ret.cov() * 252
@@ -188,40 +187,36 @@ with col2:
         <div class="metric-row"><span class="m-label">斷頭台防禦底線</span><span class="m-value c-red">{cutoff_line:.2f}</span></div>
     </div>
     """
-    st.markdown(html_card2, unsafe_allow_html=True)
+    st.markdown(html_card2.replace('\n', ''), unsafe_allow_html=True)
 
-# 卡片 3: 配置與交易明細 (跨欄)
+# 卡片 3: 配置與交易明細 (修復換行與補回最小換倉門檻)
 table_rows = ""
 for asset in ["QQQ", "QLD", "TLT", "GLD", "UUP", "SGOV"]:
     cur, tgt = CURRENT_WEIGHTS[asset], targets[asset]
     diff = tgt - cur
     action, act_class = "HOLD", "badge-hold"
+    
     if diff >= threshold: action, act_class = "BUY", "badge-buy"
     elif diff <= -threshold: action, act_class = "SELL", "badge-sell"
+    
     if not is_bull and asset == "QLD" and cur > 0: action, act_class = "CRITICAL SELL", "badge-critical"
     
     diff_color = "#22c55e" if diff >= 0 else "#ef4444"
     bg_color = "background: rgba(56, 189, 248, 0.05);" if asset == "SGOV" else ""
     
-    table_rows += f"""
-    <tr style="{bg_color}">
-        <td style="text-align:left; padding-left:20px;"><b>{asset}</b> <span style="color:#64748b; font-size:12px;">{ASSET_ROLES[asset]}</span></td>
-        <td style="font-family:monospace;">{cur:.2f}%</td>
-        <td style="font-family:monospace; font-weight:bold; color:white;">{tgt:.2f}%</td>
-        <td style="font-family:monospace; color:{diff_color};">{diff:+.2f}%</td>
-        <td><span class="badge-action {act_class}">{action}</span></td>
-    </tr>
-    """
+    # 將整段 <tr> 寫成單行字串，避免任何可能被誤判的 Markdown 縮排
+    table_rows += f'<tr style="{bg_color}"><td style="text-align:left; padding-left:20px;"><b>{asset}</b> <span style="color:#64748b; font-size:12px;">{ASSET_ROLES[asset]}</span></td><td style="font-family:monospace;">{cur:.2f}%</td><td style="font-family:monospace; font-weight:bold; color:white;">{tgt:.2f}%</td><td style="font-family:monospace; color:{diff_color};">{diff:+.2f}%</td><td style="font-family:monospace; color:#94a3b8;">{threshold:.1f}%</td><td><span class="badge-action {act_class}">{action}</span></td></tr>'
 
 html_card3 = f"""
 <div class="cyber-card">
     <h2>Dynamic Allocation & Trade Action</h2>
     <table class="cyber-table">
         <thead>
-            <tr><th>資產代碼</th><th>目前實倉</th><th>目標權重</th><th>部位落差</th><th>執行指令</th></tr>
+            <tr><th>資產代碼</th><th>目前實倉</th><th>目標權重</th><th>部位落差</th><th>最小換倉門檻</th><th>執行指令</th></tr>
         </thead>
         <tbody>{table_rows}</tbody>
     </table>
 </div>
 """
-st.markdown(html_card3, unsafe_allow_html=True)
+# 終極殺招：在輸出前把 HTML 字串裡的所有換行符號消滅掉
+st.markdown(html_card3.replace('\n', ''), unsafe_allow_html=True)
