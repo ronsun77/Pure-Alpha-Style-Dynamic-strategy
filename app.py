@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 # ==========================================
 # 0. 網頁基礎設定與終極 CSS 外掛注入
 # ==========================================
-st.set_page_config(page_title="Pure Alpha 戰情室 V7.9", layout="wide")
+st.set_page_config(page_title="Pure Alpha 戰情室 V7.10", layout="wide")
 
 custom_css = """
 <style>
@@ -17,7 +17,7 @@ custom_css = """
     .cyber-card {
         background: #17233a; border-radius: 20px; padding: 24px;
         box-shadow: 0 4px 25px rgba(0,0,0,0.35); border: 1px solid #24334d;
-        margin-bottom: 20px; color: #e2e8f0;
+        margin-bottom: 20px; color: #e2e8f0; height: 100%;
     }
     .cyber-card h2 { color: #38bdf8; margin-bottom: 20px; font-size: 20px; border-left: 4px solid #38bdf8; padding-left: 10px; }
     .cyber-card h3 { color: #facc15; font-size: 16px; margin-top: 15px; margin-bottom: 10px; }
@@ -58,7 +58,6 @@ CURRENT_WEIGHTS = {"QQQ": 28.71, "QLD": 35.66, "TLT": 7.80, "GLD": 7.65, "UUP": 
 BULL_BASE = {"QQQ": 26.0, "QLD": 32.0, "TLT": 7.0, "GLD": 7.0, "UUP": 9.0}
 BEAR_BASE = {"QQQ": 13.8, "QLD": 0.0, "TLT": 9.9, "GLD": 10.1, "UUP": 24.5}
 ASSET_ROLES = {"QQQ": "核心成長引擎", "QLD": "動能槓桿放大", "TLT": "長債負相關避險", "GLD": "抗通膨終極防禦", "UUP": "美元流動性避險", "SGOV": "流動性海綿池"}
-# 視覺化專屬配色
 CHART_COLORS = {"QQQ": "#38bdf8", "QLD": "#818cf8", "TLT": "#f472b6", "GLD": "#facc15", "UUP": "#ef4444", "SGOV": "#94a3b8"}
 
 @st.cache_data(ttl=3600)
@@ -137,9 +136,9 @@ for k in ["QQQ", "QLD", "TLT", "GLD", "UUP"]:
 targets["SGOV"] = max(0.0, 100.0 - sum(targets.values()))
 
 # ==========================================
-# 5. 前端渲染 (純 HTML 卡片區塊)
+# 5. 前端渲染 (HTML UI 上半部)
 # ==========================================
-st.markdown("<h1 style='color:white; font-weight:bold; font-size:36px; margin-bottom:0;'>Pure Alpha 戰情室 V7.9</h1>", unsafe_allow_html=True)
+st.markdown("<h1 style='color:white; font-weight:bold; font-size:36px; margin-bottom:0;'>Pure Alpha 戰情室 V7.10</h1>", unsafe_allow_html=True)
 st.markdown("<p style='color:#94a3b8; font-size:14px; margin-bottom:30px;'>Regime Engine × Excel Logic Allocation × Visual Dashboard</p>", unsafe_allow_html=True)
 
 col1, col2 = st.columns([1, 1])
@@ -217,15 +216,17 @@ html_card3 = f"""
 st.markdown(html_card3.replace('\n', ''), unsafe_allow_html=True)
 
 # ==========================================
-# 6. 動態視覺化圖表區塊 (解除 div 封印，改用自訂標題)
+# 6. 動態視覺化圖表區塊
 # ==========================================
 col_pie, col_beta = st.columns([1, 2.2])
 
 with col_pie:
-    st.markdown("<h2 style='color: #38bdf8; font-size: 18px; border-left: 4px solid #38bdf8; padding-left: 10px; margin-bottom: 10px;'>目標資產配比</h2>", unsafe_allow_html=True)
+    # 標題改為：目前實倉資產配比
+    st.markdown("<h2 style='color: #38bdf8; font-size: 18px; border-left: 4px solid #38bdf8; padding-left: 10px; margin-bottom: 10px;'>目前實倉資產配比</h2>", unsafe_allow_html=True)
     
-    pie_labels = list(targets.keys())
-    pie_values = list(targets.values())
+    # 資料源改為：CURRENT_WEIGHTS
+    pie_labels = list(CURRENT_WEIGHTS.keys())
+    pie_values = list(CURRENT_WEIGHTS.values())
     pie_colors = [CHART_COLORS[l] for l in pie_labels]
     
     fig_pie = go.Figure(data=[go.Pie(
@@ -248,11 +249,21 @@ with col_beta:
         roll_var = returns_df_full[bench_choice].rolling(window=window_choice).var()
         roll_beta = roll_cov.div(roll_var, axis=0).dropna().tail(504)
         
+        # 畫出個別資產的 Beta
         for asset in ["QQQ", "QLD", "TLT", "GLD", "UUP", "SGOV"]:
             fig_beta.add_trace(go.Scatter(
                 x=roll_beta.index, y=roll_beta[asset], mode='lines', 
                 name=asset, line=dict(color=CHART_COLORS[asset], width=2 if asset in ["QQQ","QLD"] else 1.5)
             ))
+            
+        # 畫出「目前實倉組合」的綜合 Beta (綠色粗虛線)
+        port_weights = [CURRENT_WEIGHTS[a]/100 for a in ["QQQ", "QLD", "TLT", "GLD", "UUP", "SGOV"]]
+        port_beta = (roll_beta[["QQQ", "QLD", "TLT", "GLD", "UUP", "SGOV"]] * port_weights).sum(axis=1)
+        
+        fig_beta.add_trace(go.Scatter(
+            x=port_beta.index, y=port_beta, mode='lines',
+            name='實倉組合 (Portfolio)', line=dict(color='#22c55e', width=3, dash='dash')
+        ))
             
         fig_beta.update_layout(
             template='plotly_dark', paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
@@ -266,7 +277,7 @@ with col_beta:
 st.markdown("---")
 
 # ==========================================
-# 7. 歷史回測引擎與動態分析報告 (解除 div 封印，改用自訂標題)
+# 7. 歷史回測引擎與動態分析報告
 # ==========================================
 st.markdown("<h2 style='color: #38bdf8; font-size: 22px; border-left: 5px solid #38bdf8; padding-left: 10px; margin-bottom: 20px;'>歷史回測與分析引擎 (Backtest Engine)</h2>", unsafe_allow_html=True)
 
