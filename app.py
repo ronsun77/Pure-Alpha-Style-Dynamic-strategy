@@ -61,7 +61,7 @@ ASSET_ROLES = {tk_core: "核心成長引擎", tk_lev: "動能槓桿放大", tk_b
 CHART_COLORS = {tk_core: "#38bdf8", tk_lev: "#818cf8", tk_bond: "#f472b6", tk_gold: "#facc15", tk_usd: "#ef4444", tk_safe: "#94a3b8"}
 
 # ==========================================
-# 2. 核心資料下載引擎 (升級為 20年+ 且解決新舊 ETF 長度問題)
+# 2. 核心資料下載引擎 (保留原始 NaN 以擷取發行日)
 # ==========================================
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_data(tickers_tuple):
@@ -69,7 +69,6 @@ def load_data(tickers_tuple):
     for t in tickers_tuple:
         try:
             for _ in range(3):
-                # 升級：將 period="10y" 改為 "max"，獲取最長歷史
                 df = yf.download(t, period="max", progress=False)
                 if not df.empty and 'Close' in df.columns:
                     data_dict[t] = df['Close'].iloc[:, 0] if isinstance(df['Close'], pd.DataFrame) else df['Close']
@@ -93,36 +92,42 @@ def load_data(tickers_tuple):
             time.sleep(1)
 
     if data_dict: 
-        # 升級：捨棄 .dropna()，改用 .ffill().bfill() 確保年輕的 ETF 不會導致老 ETF 的歷史被刪除
-        return pd.concat(data_dict, axis=1).ffill().bfill()
+        # 這裡不填補 NaN，保留真實資料邊界
+        return pd.concat(data_dict, axis=1)
     return pd.DataFrame()
 
 fetch_list = tuple(set(PORTFOLIO_ASSETS + ["SPY"]))
 
 with st.spinner('正在從 Yahoo Finance 同步長期歷史市場數據...'):
-    df_all = load_data(fetch_list)
+    raw_df_all = load_data(fetch_list)
 
-missing_assets = [a for a in PORTFOLIO_ASSETS if a not in df_all.columns]
+missing_assets = [a for a in PORTFOLIO_ASSETS if a not in raw_df_all.columns]
 
-if df_all.empty:
+if raw_df_all.empty:
     st.error("🚨 無法連接至 Yahoo Finance 獲取任何市場數據，請稍後重整網頁再試。")
     st.stop()
     
-if tk_core not in df_all.columns:
+if tk_core not in raw_df_all.columns:
     st.error(f"🚨 核心標的 '{tk_core}' 下載失敗！無法執行策略計算。")
     st.stop()
 
-spx_col = '^GSPC' if '^GSPC' in df_all.columns else 'SPY'
+spx_col = '^GSPC' if '^GSPC' in raw_df_all.columns else 'SPY'
 if spx_col == '^GSPC':
     h_col, l_col = 'SPX_High', 'SPX_Low'
 else:
     h_col, l_col = 'SPY_High', 'SPY_Low'
-    if 'SPY_High' not in df_all.columns or 'SPY_Low' not in df_all.columns:
+    if 'SPY_High' not in raw_df_all.columns or 'SPY_Low' not in raw_df_all.columns:
          st.error("🚨 基準大盤 (SPY) 的盤中高低點資料下載失敗，無法計算真實回撤。")
          st.stop()
 
-AVAILABLE_ASSETS = [c for c in PORTFOLIO_ASSETS if c in df_all.columns]
+AVAILABLE_ASSETS = [c for c in PORTFOLIO_ASSETS if c in raw_df_all.columns]
 CHART_PRICE_COLS = AVAILABLE_ASSETS
+
+# 紀錄所有資產的真實發行日，供回測引擎判斷
+inception_dates = raw_df_all.apply(lambda x: x.first_valid_index())
+
+# 供後續狀態機運算使用的完整填補表
+df_all = raw_df_all.ffill().bfill()
 
 # ==========================================
 # 3. 滑桿參數提取
@@ -342,10 +347,20 @@ st.markdown("---")
 # ==========================================
 st.markdown("<h2 style='color: #38bdf8; font-size: 22px; border-left: 5px solid #38bdf8; padding-left: 10px; margin-bottom: 20px;'>歷史回測與分析引擎 (Path-Dependent Rebalance)</h2>", unsafe_allow_html=True)
 
-min_date, max_date = df_all.index.min().date(), df_all.index.max().date()
+# 動態判定最晚的掛牌日
+valid_assets_for_inception = [a for a in PORTFOLIO_ASSETS if a in df_all.columns]
+valid_cols_for_inception = valid_assets_for_inception + ([bench_choice] if bench_choice in df_all.columns else [])
+latest_inception_date = inception_dates[valid_cols_for_inception].max()
+
+# 新增勾選框，讓使用者決定是否要用嚴格日期限制
+strict_inception = st.checkbox(f"🛡️ 將回測起始日對齊最晚發行資產的掛牌日 ({latest_inception_date.date()})，避免早期填補數據造成失真", value=True)
+
+base_min_date = df_all.index.min().date()
+allowed_min_date = latest_inception_date.date() if strict_inception else base_min_date
+
 col_d1, col_d2, _ = st.columns([1, 1, 2])
-start_date = col_d1.date_input("回測起始日", min_date, min_value=min_date, max_value=max_date)
-end_date = col_d2.date_input("回測結束日", max_date, min_value=min_date, max_value=max_date)
+start_date = col_d1.date_input("回測起始日", allowed_min_date, min_value=allowed_min_date, max_value=df_all.index.max().date())
+end_date = col_d2.date_input("回測結束日", df_all.index.max().date(), min_value=allowed_min_date, max_value=df_all.index.max().date())
 
 bt_mask = (df_all.index.date >= start_date) & (df_all.index.date <= end_date)
 bt_df = df_all.loc[bt_mask]
@@ -354,8 +369,8 @@ valid_assets = [a for a in PORTFOLIO_ASSETS if a in bt_df.columns]
 valid_cols = valid_assets + [bench_choice] if bench_choice in bt_df.columns else valid_assets
 
 if len(bt_df) > 10 and len(valid_assets) > 0 and bench_choice in bt_df.columns:
-    # 升級：在進行回測前先填補任何潛在的 NaN 漏洞，確保策略不會因為新 ETF 缺資料而閃退
-    bt_ret = bt_df[valid_cols].ffill().bfill().pct_change().dropna()
+    # 回測引擎：這裡的 bt_df 已經是被 ffill().bfill() 處理過的安全數據
+    bt_ret = bt_df[valid_cols].pct_change().dropna()
     tgt_weights_sub = tgt_weights_df.loc[bt_ret.index]
     
     n_days = len(bt_ret)
@@ -373,7 +388,6 @@ if len(bt_df) > 10 and len(valid_assets) > 0 and bench_choice in bt_df.columns:
         daily_p_ret = np.dot(current_w, day_ret)
         port_nav[i] = (1.0 * (1 + daily_p_ret)) if i == 0 else (port_nav[i-1] * (1 + daily_p_ret))
         
-        # 修正：避免因為 0 報酬而產生除以 0 的錯誤
         if (1 + daily_p_ret) == 0:
             drifted_w = current_w.copy()
         else:
@@ -483,4 +497,4 @@ with st.expander("🔍 歷史回撤與觸發除錯檢視 (Data Inspector)"):
         st.write("資料不齊全，無法顯示除錯表。")
 
 # 標示版本號 (放置於頁尾)
-st.markdown('<div class="version-footer">Powered by Pure Alpha Quantitative Engine | Version 8.8.2 (20-Year Full History Build)</div>', unsafe_allow_html=True)
+st.markdown('<div class="version-footer">Powered by Pure Alpha Quantitative Engine | Version 8.8.3 (Dynamic Inception Date)</div>', unsafe_allow_html=True)
