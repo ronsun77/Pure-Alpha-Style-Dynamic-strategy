@@ -54,7 +54,6 @@ with st.sidebar.expander("⚙️ 自訂資產代碼 (ETF Tickers)", expanded=Fal
 
 PORTFOLIO_ASSETS = [tk_core, tk_lev, tk_bond, tk_gold, tk_usd, tk_safe]
 
-# 動態替換字典與權重基準
 CURRENT_WEIGHTS = {tk_core: 28.71, tk_lev: 35.66, tk_bond: 7.80, tk_gold: 7.65, tk_usd: 8.00, tk_safe: 12.18}
 BULL_BASE = {tk_core: 26.0, tk_lev: 32.0, tk_bond: 7.0, tk_gold: 7.0, tk_usd: 9.0}
 BEAR_BASE = {tk_core: 20.0, tk_lev: 20.0, tk_bond: 10.0, tk_gold: 10.0, tk_usd: 20.0}
@@ -62,7 +61,7 @@ ASSET_ROLES = {tk_core: "核心成長引擎", tk_lev: "動能槓桿放大", tk_b
 CHART_COLORS = {tk_core: "#38bdf8", tk_lev: "#818cf8", tk_bond: "#f472b6", tk_gold: "#facc15", tk_usd: "#ef4444", tk_safe: "#94a3b8"}
 
 # ==========================================
-# 2. 核心資料下載引擎 (引入動態 Tuple 避免 Cache 混亂)
+# 2. 核心資料下載引擎
 # ==========================================
 @st.cache_data(ttl=3600)
 def load_data(tickers_tuple):
@@ -77,7 +76,6 @@ def load_data(tickers_tuple):
                     data_dict["SPY_Low"] = df['Low'].iloc[:, 0] if isinstance(df['Low'], pd.DataFrame) else df['Low']
         except Exception: pass
     
-    # 強制抓取 SPX 盤中真實數據
     for _ in range(3):
         try:
             spx_df = yf.download("^GSPC", period="10y", progress=False)
@@ -92,11 +90,9 @@ def load_data(tickers_tuple):
     if data_dict: return pd.concat(data_dict, axis=1).dropna()
     return pd.DataFrame()
 
-# 將當前設定的 ETF 轉為 Tuple，再加上 SPY 當備用
 fetch_list = tuple(set(PORTFOLIO_ASSETS + ["SPY"]))
 df_all = load_data(fetch_list)
 
-# 確認是否抓到所有的資產，如果有缺則提醒
 missing_assets = [a for a in PORTFOLIO_ASSETS if a not in df_all.columns]
 if missing_assets:
     st.error(f"⚠️ 無法下載以下標的資料，請檢查代碼是否正確：{', '.join(missing_assets)}")
@@ -107,6 +103,8 @@ if spx_col == '^GSPC':
     h_col, l_col = 'SPX_High', 'SPX_Low'
 else:
     h_col, l_col = 'SPY_High', 'SPY_Low'
+
+CHART_PRICE_COLS = [c for c in PORTFOLIO_ASSETS if c in df_all.columns]
 
 # ==========================================
 # 3. 滑桿參數提取
@@ -134,7 +132,6 @@ dip_lv2_frac = dip_lv2 / 100.0
 # ==========================================
 df_all['MA200'] = df_all[tk_core].rolling(200).mean()
 
-# 盤中真實高低點回撤
 df_all['SPX_Max'] = df_all[h_col].cummax()
 df_all['SPX_DD'] = df_all[l_col] / df_all['SPX_Max'] - 1
 
@@ -173,9 +170,10 @@ w_bond_tgt = np.where(df_all['Regime'] == 0, BEAR_BASE[tk_bond], BULL_BASE[tk_bo
 w_gold_tgt = np.where(df_all['Regime'] == 0, BEAR_BASE[tk_gold], BULL_BASE[tk_gold] * mult_bond_gold)
 w_usd_tgt = np.where(df_all['Regime'] == 0, BEAR_BASE[tk_usd], BULL_BASE[tk_usd] * mult_usd)
 
-w_lev_tgt = np.where(df_all['Regime'] == 30, 25.0 * mult_core_lev,
-            np.where(df_all['Regime'] == 19, 15.0 * mult_core_lev,
-            np.where(df_all['Regime'] == 1, BULL_BASE[tk_lev] * mult_core_lev, 0.0)))
+# 徹底解決 ValueError：統一使用 np.select 確保產生長度一致的一維陣列
+condlist = [df_all['Regime'] == 30, df_all['Regime'] == 19, df_all['Regime'] == 1]
+choicelist = [25.0 * mult_core_lev, 15.0 * mult_core_lev, BULL_BASE[tk_lev] * mult_core_lev]
+w_lev_tgt = np.select(condlist, choicelist, default=0.0)
 
 w_safe_tgt = np.maximum(0, 100.0 - (w_core_tgt + w_lev_tgt + w_bond_tgt + w_gold_tgt + w_usd_tgt))
 
@@ -231,7 +229,7 @@ with col1:
     st.markdown(html_card1.replace('\n', ''), unsafe_allow_html=True)
 
 with col2:
-    recent_ret = df_all[PORTFOLIO_ASSETS].pct_change().tail(window_choice).dropna()
+    recent_ret = df_all[CHART_PRICE_COLS].pct_change().tail(window_choice).dropna()
     w_array = np.array([targets[a] / 100 for a in PORTFOLIO_ASSETS])
     cov_matrix = recent_ret.cov() * 252
     p_vol = np.sqrt(np.dot(w_array.T, np.dot(cov_matrix, w_array)))
