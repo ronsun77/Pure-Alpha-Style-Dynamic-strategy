@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 # ==========================================
 # 0. 網頁基礎設定與終極 CSS
 # ==========================================
-st.set_page_config(page_title="Pure Alpha 戰情室 V8.8 (盤中真實觸價版)", layout="wide")
+st.set_page_config(page_title="Pure Alpha 戰情室 V8.8 (終極專業版)", layout="wide")
 
 custom_css = """
 <style>
@@ -52,7 +52,6 @@ CHART_COLORS = {"QQQ": "#38bdf8", "QLD": "#818cf8", "TLT": "#f472b6", "GLD": "#f
 @st.cache_data(ttl=3600)
 def load_data():
     data_dict = {}
-    # 1. 抓取一般 ETF
     for t in PRICE_COLS:
         try:
             df = yf.download(t, period="10y", progress=False)
@@ -63,7 +62,6 @@ def load_data():
                     data_dict["SPY_Low"] = df['Low'].iloc[:, 0] if isinstance(df['Low'], pd.DataFrame) else df['Low']
         except Exception: pass
     
-    # 2. 強制抓取 SPX (包含 High/Low)
     for _ in range(3):
         try:
             spx_df = yf.download("^GSPC", period="10y", progress=False)
@@ -80,7 +78,6 @@ def load_data():
 
 df_all = load_data()
 
-# 判定大盤基準與高低點欄位
 spx_col = '^GSPC' if '^GSPC' in df_all.columns else 'SPY'
 if spx_col == '^GSPC':
     h_col, l_col = 'SPX_High', 'SPX_Low'
@@ -112,11 +109,11 @@ dip_lv1_frac = dip_lv1 / 100.0
 dip_lv2_frac = dip_lv2 / 100.0
 
 # ==========================================
-# 3. 雙門檻 + 盤中觸價狀態機 
+# 3. 雙門檻 + 盤中觸價狀態機
 # ==========================================
 df_all['MA200'] = df_all['QQQ'].rolling(200).mean()
 
-# 關鍵：使用 High/Low 算真實盤中回撤
+# 盤中真實回撤
 df_all['SPX_Max'] = df_all[h_col].cummax()
 df_all['SPX_DD'] = df_all[l_col] / df_all['SPX_Max'] - 1
 
@@ -145,7 +142,7 @@ for i in range(len(df_all)):
 
 df_all['Regime'] = regime_states
 
-# 權重矩陣
+# 權重生成矩陣
 mult_qqq_qld = k_value
 mult_tlt_gld = 1.0 + (k_value - 1) * 0.525
 mult_uup = 2.0 - k_value
@@ -282,7 +279,7 @@ with col_beta:
 st.markdown("---")
 
 # ==========================================
-# 6. 高級路徑依賴回測引擎 
+# 6. 高級路徑依賴回測引擎與分析報告
 # ==========================================
 st.markdown("<h2 style='color: #38bdf8; font-size: 22px; border-left: 5px solid #38bdf8; padding-left: 10px; margin-bottom: 20px;'>歷史回測與分析引擎 (Path-Dependent Rebalance)</h2>", unsafe_allow_html=True)
 
@@ -340,7 +337,6 @@ if len(bt_df) > 10:
     sharpe = (cagr - 0.04) / bt_vol if bt_vol > 0 else 0
     bench_sharpe = (bench_cagr - 0.04) / bench_vol if bench_vol > 0 else 0
     
-    # 區間整體 Beta 計算
     bt_cov = port_daily_ret_series.cov(bt_ret[bench_choice])
     bt_var = bt_ret[bench_choice].var()
     bt_beta = bt_cov / bt_var if bt_var > 0 else 0
@@ -351,7 +347,6 @@ if len(bt_df) > 10:
     fig.update_layout(template='plotly_dark', paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', margin=dict(l=60, r=20, t=20, b=40), height=350, legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01), yaxis_title="累積資金淨值")
     st.plotly_chart(fig, use_container_width=True)
     
-    # 擴增為 6 個卡片，加入區間 Beta
     c1, c2, c3, c4, c5, c6 = st.columns(6)
     c1.metric("總報酬率", f"{total_ret*100:.2f}%", f"大盤 {bench_total_ret*100:.2f}%")
     c2.metric("年化報酬", f"{cagr*100:.2f}%", f"大盤 {bench_cagr*100:.2f}%")
@@ -365,14 +360,40 @@ if len(bt_df) > 10:
     bear_days = np.sum(df_all.loc[bt_mask, 'Regime'] == 0)
     avg_reb_days = total_days // max(1, rebalance_count)
     
+    if total_ret < bench_total_ret and bt_beta >= 0.95:
+        beta_diag = f"""
+        <li><span style="color:#ef4444;"><b>Beta 偽裝與稀釋效應 (Dilution Effect)：</b></span><br>
+        本區間組合 Beta 高達 <b>{bt_beta:.2f}</b> 但總報酬卻落後基準。此現象主因為策略配置了 TLT (美債)、GLD (黃金) 或 SGOV (現金) 等避險資產。在強勢單邊牛市中，這些非核心部位產生了<b>「現金拖累 (Cash Drag)」</b>，吃掉了 QLD 槓桿帶來的超額報酬。這證明此階段市場為單邊極端行情，多元資產配置的防禦特性反而成為績效阻力。</li>"""
+    elif total_ret > bench_total_ret and bt_beta < 1.0:
+        beta_diag = f"""
+        <li><span style="color:#22c55e;"><b>優異的風險調整後報酬 (Alpha Generation)：</b></span><br>
+        本區間組合 Beta 僅 <b>{bt_beta:.2f}</b>，卻成功擊敗基準大盤！這顯示策略的「雙門檻防禦」與「左側抄底機制」在震盪或熊市期間成功發揮作用。透過在底部擴大 QLD 槓桿，並在高波動時躲入 SGOV/TLT，策略成功實現了<b>「低風險、高超額」</b>的非對稱打擊。</li>"""
+    else:
+        beta_diag = f"""
+        <li><b>Beta 與報酬一致性：</b><br>
+        本區間策略 Beta 為 <b>{bt_beta:.2f}</b>，整體績效走勢與大盤預期相符。在單邊趨勢中，資產配置發揮了預定的槓桿或防禦特性。</li>"""
+
+    if mdd > bench_mdd * 0.7:
+        mdd_diag = f"""
+        <li><span style="color:#38bdf8;"><b>卓越下檔防護 (Drawdown Control)：</b></span><br>
+        策略成功將最大回撤鎖定在 <b>{mdd*100:.2f}%</b> (基準為 {bench_mdd*100:.2f}%)。這歸功於「跌破 0.97 MA200 切換熊市」的果斷機制，成功避開了主跌段的系統性崩潰。</li>"""
+    else:
+         mdd_diag = f"""
+        <li><b>回撤壓力測試 (Drawdown Exposure)：</b><br>
+        區間最大回撤為 <b>{mdd*100:.2f}%</b>。若此回撤發生在左側抄底階段 (Regime 19/30)，則為預期中的「建倉期浮虧」，系統正透過 QLD 吸收底部籌碼。</li>"""
+
     report_html = f"""
-    <div style="background: rgba(23, 35, 58, 0.5); padding: 20px; border-radius: 12px; margin-top: 20px; border-left: 5px solid #38bdf8;">
-        <h3 style="color: #38bdf8; margin-top: 0; font-size: 18px;">📊 策略深度分析報告</h3>
-        <div class="report-text">
-            <p>歷史記憶狀態機運作統計：滿血牛市進攻期共 <b>{bull_days}</b> 天，階梯式左側抄底期共 <b>{dip_days}</b> 天，熊市防禦冬眠期共 <b>{bear_days}</b> 天。</p>
-            <ul style="margin-top: 10px; margin-bottom: 10px;">
-                <li><b>換倉控制常態：</b>在當前 <b>{threshold:.1f}%</b> 的調倉門檻限制下，全歷史共觸發真實再平衡交易 <b>{rebalance_count}</b> 次 (平均每 {avg_reb_days} 個交易日調整一次)。</li>
-                <li><b>風控防禦效能：</b>階梯式左側抄底建倉成功抱持，最大下檔回撤成功鎖定在 <b>{mdd*100:.2f}%</b>，顯著優於大盤的基準表現。</li>
+    <div style="background: rgba(23, 35, 58, 0.7); padding: 20px; border-radius: 12px; margin-top: 25px; border-left: 5px solid #38bdf8; box-shadow: 0 4px 15px rgba(0,0,0,0.2);">
+        <h3 style="color: #38bdf8; margin-top: 0; font-size: 18px; border-bottom: 1px solid #24334d; padding-bottom: 10px;">📊 策略深度歸因分析 (Attribution Analysis)</h3>
+        <div class="report-text" style="color: #cbd5e1; line-height: 1.6;">
+            <p style="margin-bottom: 15px;"><b>📌 狀態機歷史足跡：</b><br>
+            全血牛市進攻期：<b>{bull_days}</b> 天 │ 左側階梯抄底期：<span style="color:#38bdf8;"><b>{dip_days}</b></span> 天 │ 熊市防禦冬眠期：<span style="color:#ef4444;"><b>{bear_days}</b></span> 天。</p>
+            <p style="margin-bottom: 5px;"><b>📌 系統動力學診斷：</b></p>
+            <ul style="margin-top: 0; margin-bottom: 15px;">
+                <li><b>再平衡成本損耗 (Rebalance Friction)：</b><br>
+                在 <b>{threshold:.1f}%</b> 的容忍門檻下，觸發真實調倉 <b>{rebalance_count}</b> 次 (平均每 {avg_reb_days} 天一次)。若換倉次數過於頻繁，可能導致過高的滑價與手續費摩擦。</li>
+                {beta_diag}
+                {mdd_diag}
             </ul>
         </div>
     </div>
