@@ -13,7 +13,7 @@ st.set_page_config(page_title="Pure Alpha 多資產對沖策略戰情室", layou
 
 custom_css = """
 <style>
-    #MainMenu {visibility: hidden;} footer {visibility: hidden;} header {visibility: hidden;}
+    #MainMenu {visibility: hidden;} footer {visibility: hidden;} 
     .stApp { background-color: #081028; font-family: 'Segoe UI', Arial, sans-serif; }
     .cyber-card { background: #17233a; border-radius: 20px; padding: 24px; box-shadow: 0 4px 25px rgba(0,0,0,0.35); border: 1px solid #24334d; margin-bottom: 20px; color: #e2e8f0; height: 100%; }
     .cyber-card h2 { color: #38bdf8; margin-bottom: 20px; font-size: 20px; border-left: 4px solid #38bdf8; padding-left: 10px; }
