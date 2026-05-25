@@ -6,9 +6,9 @@ import plotly.graph_objects as go
 from datetime import datetime, timedelta
 
 # ==========================================
-# 0. 網頁基礎設定與終極 CSS 外掛注入
+# 0. 網頁基礎設定與終極 CSS
 # ==========================================
-st.set_page_config(page_title="Pure Alpha 戰情室 V8.7", layout="wide")
+st.set_page_config(page_title="Pure Alpha 戰情室 V8.8", layout="wide")
 
 custom_css = """
 <style>
@@ -39,7 +39,7 @@ custom_css = """
 st.markdown(custom_css, unsafe_allow_html=True)
 
 # ==========================================
-# 1. 核心參數與資料下載 (納入真實指數 ^GSPC)
+# 1. 核心參數與資料下載
 # ==========================================
 PRICE_COLS = ["QQQ", "QLD", "TLT", "GLD", "UUP", "SGOV", "SPY", "^GSPC"]
 CURRENT_WEIGHTS = {"QQQ": 28.71, "QLD": 35.66, "TLT": 7.80, "GLD": 7.65, "UUP": 8.00, "SGOV": 12.18}
@@ -63,20 +63,42 @@ def load_data():
     return pd.DataFrame()
 
 df_all = load_data()
-# 動態過濾：只保留真正下載成功的欄位，防呆機制
 PRICE_COLS = [c for c in PRICE_COLS if c in df_all.columns]
+spx_col = '^GSPC' if '^GSPC' in df_all.columns else 'SPY'
+
+if spx_col == 'SPY':
+    st.sidebar.warning("⚠️ Yahoo API 阻擋了 ^GSPC，目前使用 SPY 計算回撤，請適度微調抄底門檻以對齊誤差。")
 
 # ==========================================
-# 2. 雙門檻 + 階梯抄底記憶狀態機
+# 2. 控制面板與參數提取
+# ==========================================
+st.sidebar.markdown("<h2 style='color:#38bdf8;'>動態參數調控</h2>", unsafe_allow_html=True)
+latest_qqq = float(df_all["QQQ"].iloc[-1]) if not df_all.empty else 717.54
+computed_ma200 = float(df_all["QQQ"].rolling(200).mean().iloc[-1]) if not df_all.empty else 612.72
+
+sim_qqq = st.sidebar.slider("QQQ 模擬/現價", 400.0, 900.0, latest_qqq, step=0.01)
+sim_ma200 = st.sidebar.slider("QQQ MA200 基準線", 400.0, 800.0, computed_ma200, step=0.01)
+k_value = st.sidebar.slider("動態縮放 K 值", 0.500, 1.500, 1.137, step=0.001)
+threshold = st.sidebar.slider("最小換倉門檻 (%)", 0.5, 5.0, 2.0, step=0.1)
+
+st.sidebar.markdown("<h3 style='color:#facc15;'>左側抄底門檻設定</h3>", unsafe_allow_html=True)
+dip_lv1 = st.sidebar.slider("Lv1 抄底門檻 (%)", 10.0, 25.0, 19.0, step=0.1)
+dip_lv2 = st.sidebar.slider("Lv2 恐慌門檻 (%)", 20.0, 40.0, 30.0, step=0.1)
+
+bench_choice = st.sidebar.selectbox("對標基準", ["QQQ", "SPY"])
+window_choice = st.sidebar.selectbox("滾動週期", [21, 63, 126], index=0)
+
+dip_lv1_frac = dip_lv1 / 100.0
+dip_lv2_frac = dip_lv2 / 100.0
+
+# ==========================================
+# 3. 雙門檻 + 階梯抄底記憶狀態機
 # ==========================================
 df_all['MA200'] = df_all['QQQ'].rolling(200).mean()
-
-# 關鍵防呆：如果 ^GSPC 遭 Yahoo 阻擋，自動無縫降級使用 SPY
-spx_col = '^GSPC' if '^GSPC' in df_all.columns else 'SPY'
 df_all['SPX_Max'] = df_all[spx_col].cummax()
 df_all['SPX_DD'] = df_all[spx_col] / df_all['SPX_Max'] - 1
 
-regime_states = [] # 狀態映射：0=熊市防禦, 1=常態牛市, 19=19%抄底鎖定, 30=30%極度抄底鎖定
+regime_states = []
 current_state = 1 
 
 for i in range(len(df_all)):
@@ -88,48 +110,29 @@ for i in range(len(df_all)):
         regime_states.append(1)
         continue
     
-    # 規則 1：右側確認大反轉，強制回歸滿血牛市
     if q >= ma * 1.04:
         current_state = 1
-    # 規則 2：左側階梯式抄底判定 (一旦鎖定，反彈不輕易平倉，直到滿足規則 1)
-    elif spx_dd <= -0.30:
+    elif spx_dd <= -dip_lv2_frac:
         current_state = 30
-    elif spx_dd <= -0.19 and current_state != 30:
+    elif spx_dd <= -dip_lv1_frac and current_state != 30:
         current_state = 19
-    # 規則 3：常態牛市跌破均線防禦線，切換為熊市
-    elif current_state == 1 and q < ma * 0.97 and spx_dd > -0.19:
+    elif current_state == 1 and q < ma * 0.97 and spx_dd > -dip_lv1_frac:
         current_state = 0
         
     regime_states.append(current_state)
 
 df_all['Regime'] = regime_states
 
-# ==========================================
-# 3. 控制面板與全歷史目標權重矩陣
-# ==========================================
-st.sidebar.markdown("<h2 style='color:#38bdf8;'>動態參數調控</h2>", unsafe_allow_html=True)
-latest_qqq = float(df_all["QQQ"].iloc[-1]) if not df_all.empty else 717.54
-computed_ma200 = float(df_all["MA200"].iloc[-1]) if not df_all.empty else 612.72
-
-sim_qqq = st.sidebar.slider("QQQ 模擬/現價", 400.0, 900.0, latest_qqq, step=0.01)
-sim_ma200 = st.sidebar.slider("QQQ MA200 基準線", 400.0, 800.0, computed_ma200, step=0.01)
-k_value = st.sidebar.slider("動態縮放 K 值", 0.500, 1.500, 1.137, step=0.001)
-threshold = st.sidebar.slider("最小換倉門檻 (%)", 0.5, 5.0, 2.0, step=0.1)
-bench_choice = st.sidebar.selectbox("對標基準", ["QQQ", "SPY"])
-window_choice = st.sidebar.selectbox("滾動週期", [21, 63, 126], index=0)
-
-# K 值邏輯
+# 權重生成矩陣
 mult_qqq_qld = k_value
 mult_tlt_gld = 1.0 + (k_value - 1) * 0.525
 mult_uup = 2.0 - k_value
 
-# 生成全歷史動態目標矩陣
 w_qqq_tgt = np.where(df_all['Regime'] == 0, BEAR_BASE["QQQ"], BULL_BASE["QQQ"] * mult_qqq_qld)
 w_tlt_tgt = np.where(df_all['Regime'] == 0, BEAR_BASE["TLT"], BULL_BASE["TLT"] * mult_tlt_gld)
 w_gld_tgt = np.where(df_all['Regime'] == 0, BEAR_BASE["GLD"], BULL_BASE["GLD"] * mult_tlt_gld)
 w_uup_tgt = np.where(df_all['Regime'] == 0, BEAR_BASE["UUP"], BULL_BASE["UUP"] * mult_uup)
 
-# 精準寫入階梯式抄底 QLD 權重邏輯
 w_qld_tgt = np.where(df_all['Regime'] == 30, 25.0 * mult_qqq_qld,
             np.where(df_all['Regime'] == 19, 15.0 * mult_qqq_qld,
             np.where(df_all['Regime'] == 1, BULL_BASE["QLD"] * mult_qqq_qld, BEAR_BASE["QLD"])))
@@ -143,23 +146,23 @@ tgt_weights_df = pd.DataFrame({
 
 targets = (tgt_weights_df.loc[df_all.index[-1]] * 100).to_dict()
 
-# UI 盤中即時狀態模擬顯示
+# UI 盤中狀態判定
 current_spx_dd = df_all['SPX_DD'].iloc[-1] if not df_all.empty else 0.0
 last_state = df_all['Regime'].iloc[-2] if len(df_all) > 1 else 1
 
 if last_state == 1:
-    if current_spx_dd <= -0.30: regime_text, r_class = "極度恐慌抄底鎖定 (SPX DD > 30%)", "dip-box"
-    elif current_spx_dd <= -0.19: regime_text, r_class = "左側抄底鎖定 (SPX DD > 19%)", "dip-box"
+    if current_spx_dd <= -dip_lv2_frac: regime_text, r_class = "極度恐慌抄底鎖定 (SPX DD > 30%)", "dip-box"
+    elif current_spx_dd <= -dip_lv1_frac: regime_text, r_class = "左側抄底鎖定 (SPX DD > 19%)", "dip-box"
     elif sim_qqq < sim_ma200 * 0.97: regime_text, r_class = "熊市冬眠啟動 (跌破 0.97)", "bear-box"
     else: regime_text, r_class = "核心進攻模式", "bull-box"
 elif last_state == 0:
     if sim_qqq >= sim_ma200 * 1.04: regime_text, r_class = "重返牛市 (強勢突破 1.04)", "bull-box"
-    elif current_spx_dd <= -0.30: regime_text, r_class = "極度恐慌抄底鎖定 (SPX DD > 30%)", "dip-box"
-    elif current_spx_dd <= -0.19: regime_text, r_class = "左側抄底鎖定 (SPX DD > 19%)", "dip-box"
+    elif current_spx_dd <= -dip_lv2_frac: regime_text, r_class = "極度恐慌抄底鎖定 (SPX DD > 30%)", "dip-box"
+    elif current_spx_dd <= -dip_lv1_frac: regime_text, r_class = "左側抄底鎖定 (SPX DD > 19%)", "dip-box"
     else: regime_text, r_class = "熊市冬眠中 (等待突破 1.04)", "bear-box"
 else:
     if sim_qqq >= sim_ma200 * 1.04: regime_text, r_class = "抄底成功！重返滿血牛市", "bull-box"
-    elif current_spx_dd <= -0.30: regime_text, r_class = "極度恐慌抄底鎖定 (SPX DD > 30%)", "dip-box"
+    elif current_spx_dd <= -dip_lv2_frac: regime_text, r_class = "極度恐慌抄底鎖定 (SPX DD > 30%)", "dip-box"
     else: regime_text, r_class = "左側抄底建倉鎖定中 (等待牛市訊號)", "dip-box"
 
 ratio = sim_qqq / sim_ma200 if sim_ma200 > 0 else 1.0
@@ -167,14 +170,14 @@ ratio = sim_qqq / sim_ma200 if sim_ma200 > 0 else 1.0
 # ==========================================
 # 4. 前端總覽面板渲染
 # ==========================================
-st.markdown("<h1 style='color:white; font-weight:bold;'>Pure Alpha 戰情室 V8.7</h1>", unsafe_allow_html=True)
+st.markdown("<h1 style='color:white; font-weight:bold;'>Pure Alpha 戰情室 V8.8</h1>", unsafe_allow_html=True)
 col1, col2 = st.columns([1, 1])
 
 with col1:
     spx_dd_html = f"{current_spx_dd * 100:.2f}%" if not df_all.empty else "-9.79%"
     html_card1 = f"""
     <div class="cyber-card">
-        <h2>市場 Regime Engine (防呆保護版)</h2>
+        <h2>市場 Regime Engine ({spx_col} 聯動)</h2>
         <div class="metric-row"><span class="m-label">QQQ 當前價格</span><span class="m-value c-yellow">{sim_qqq:.2f}</span></div>
         <div class="metric-row"><span class="m-label">QQQ MA200 均線</span><span class="m-value">{sim_ma200:.2f}</span></div>
         <div class="metric-row"><span class="m-label">SPX 真實回撤</span><span class="m-value c-yellow">{spx_dd_html}</span></div>
@@ -202,7 +205,6 @@ with col2:
     """
     st.markdown(html_card2.replace('\n', ''), unsafe_allow_html=True)
 
-# 矩陣核心看板
 table_rows = ""
 is_bull_now = df_all['Regime'].iloc[-1] in [1, 19, 30]
 for asset in ["QQQ", "QLD", "TLT", "GLD", "UUP", "SGOV"]:
@@ -221,7 +223,6 @@ for asset in ["QQQ", "QLD", "TLT", "GLD", "UUP", "SGOV"]:
 
 st.markdown(f"""
 <div class="cyber-card" style="margin-bottom:30px;">
-    <h2>Dynamic Allocation & Correlation Matrix</h2>
     <table class="cyber-table"><thead><tr><th>資產代碼</th><th>目前實倉</th><th>目標權重</th><th>部位落差</th><th>波動率({window_choice}D)</th><th>相關係數</th><th>Rolling Beta</th><th>執行指令</th></tr></thead><tbody>{table_rows}</tbody></table>
 </div>
 """, unsafe_allow_html=True)
@@ -329,24 +330,14 @@ if len(bt_df) > 10:
     c3.metric("最大回撤 (MDD)", f"{mdd*100:.2f}%", f"大盤 {bench_mdd*100:.2f}%", delta_color="inverse")
     c4.metric("年化波動率 (Vol)", f"{bt_vol*100:.2f}%", f"大盤 {bench_vol*100:.2f}%", delta_color="inverse")
     c5.metric("夏普指標 (Sharpe)", f"{sharpe:.2f}", f"大盤 {bench_sharpe:.2f}")
-    
-    bull_days = np.sum(df_all.loc[bt_mask, 'Regime'] == 1)
-    dip_days = np.sum((df_all.loc[bt_mask, 'Regime'] == 19) | (df_all.loc[bt_mask, 'Regime'] == 30))
-    bear_days = np.sum(df_all.loc[bt_mask, 'Regime'] == 0)
-    avg_reb_days = total_days // max(1, rebalance_count)
-    
-    report_html = f"""
-    <div style="background: rgba(23, 35, 58, 0.5); padding: 20px; border-radius: 12px; margin-top: 20px; border-left: 5px solid #38bdf8;">
-        <h3 style="color: #38bdf8; margin-top: 0; font-size: 18px;">📊 策略深度分析報告</h3>
-        <div class="report-text">
-            <p>歷史記憶狀態機運作統計：滿血牛市進攻期共 <b>{bull_days}</b> 天，階梯式左側抄底期共 <b>{dip_days}</b> 天，熊市防禦冬眠期共 <b>{bear_days}</b> 天。</p>
-            <ul style="margin-top: 10px; margin-bottom: 10px;">
-                <li><b>換倉控制常態：</b>在當前 <b>{threshold:.1f}%</b> 的調倉門檻限制下，全歷史共觸發真實再平衡交易 <b>{rebalance_count}</b> 次 (平均每 {avg_reb_days} 個交易日調整一次)。</li>
-                <li><b>風控防禦效能：</b>階梯式左側抄底建倉成功抱持，最大下檔回撤成功鎖定在 <b>{mdd*100:.2f}%</b>，顯著優於大盤的基準表現。</li>
-            </ul>
-        </div>
-    </div>
-    """
-    st.markdown(report_html.replace('\n', ''), unsafe_allow_html=True)
 else:
     st.warning("資料不足。")
+
+# ==========================================
+# 7. 除錯透視鏡 (隱藏面板)
+# ==========================================
+with st.expander("🔍 歷史回撤與觸發除錯檢視 (Data Inspector)"):
+    st.markdown("在此確認 Yahoo Finance 計算的回撤是否與你的 Excel 有微小落差。")
+    debug_df = df_all[['QQQ', 'MA200', spx_col, 'SPX_DD', 'Regime']].tail(100).copy()
+    debug_df['SPX_DD'] = (debug_df['SPX_DD'] * 100).round(2).astype(str) + '%'
+    st.dataframe(debug_df.sort_index(ascending=False))
