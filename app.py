@@ -4,14 +4,12 @@ import numpy as np
 import yfinance as yf
 import plotly.graph_objects as go
 import time
-from datetime import datetime, timedelta
 
 # ==========================================
 # 0. 網頁基礎設定與終極 CSS
 # ==========================================
 st.set_page_config(page_title="Pure Alpha 多資產對沖策略戰情室", layout="wide")
 
-# 修正：把 header {visibility: hidden;} 拿掉，讓你可以點擊左上角按鈕叫出側邊欄
 custom_css = """
 <style>
     #MainMenu {visibility: hidden;} footer {visibility: hidden;} 
@@ -256,9 +254,15 @@ with col2:
         
         bench_ret = df_all[bench_choice].pct_change().tail(window_choice).dropna()
         if not recent_ret.empty and not bench_ret.empty and len(recent_ret) == len(bench_ret):
-            p_ret_series = recent_ret.dot(w_array)
-            # 確保使用 float 型態
-            p_beta = float((p_ret_series.cov(bench_ret) * 252) / (bench_ret.var() * 252))
+            # 強制轉換為 Numpy array 計算，確保穩定
+            p_ret_arr = recent_ret.dot(w_array).values
+            b_ret_arr = bench_ret.values
+            if len(p_ret_arr) > 1:
+                cov_val = np.cov(p_ret_arr, b_ret_arr)[0, 1]
+                var_val = np.var(b_ret_arr, ddof=1)
+                p_beta = (cov_val * 252) / (var_val * 252) if var_val > 0 else 0.0
+            else:
+                p_beta = 0.0
         else:
             p_beta = 0.0
             
@@ -291,9 +295,16 @@ for asset in AVAILABLE_ASSETS:
     vol_str = f"{recent_ret[asset].std() * np.sqrt(252) * 100:.1f}%" if 'recent_ret' in locals() and asset in recent_ret else "0.0%"
     
     if 'recent_ret' in locals() and asset in recent_ret and 'bench_ret' in locals() and not bench_ret.empty:
-        corr_val = float(recent_ret[asset].corr(bench_ret))
-        beta_val = float(recent_ret[asset].cov(bench_ret) / bench_ret.var())
-        corr, beta_str = corr_val, f"{beta_val:.2f}"
+        a_ret_arr = recent_ret[asset].values
+        b_ret_arr = bench_ret.values
+        if len(a_ret_arr) == len(b_ret_arr) and len(a_ret_arr) > 1:
+            corr = np.corrcoef(a_ret_arr, b_ret_arr)[0, 1]
+            cov_val = np.cov(a_ret_arr, b_ret_arr)[0, 1]
+            var_val = np.var(b_ret_arr, ddof=1)
+            beta_val = cov_val / var_val if var_val > 0 else 0.0
+            beta_str = f"{beta_val:.2f}"
+        else:
+             corr, beta_str = 0.0, "0.00"
     else:
         corr, beta_str = 0.0, "0.00"
         
@@ -417,6 +428,7 @@ if len(bt_df) > 10 and len(valid_assets) > 0 and bench_choice in bt_df.columns:
     sharpe = (cagr - 0.04) / bt_vol if bt_vol > 0 else 0
     bench_sharpe = (bench_cagr - 0.04) / bench_vol if bench_vol > 0 else 0
     
+    # 終極修復：確保以 Numpy Array 進行安全計算
     p_series = port_daily_ret_series.values
     b_series = bt_ret[bench_choice].values
     if len(p_series) == len(b_series) and len(p_series) > 1:
@@ -500,4 +512,4 @@ with st.expander("🔍 歷史回撤與觸發除錯檢視 (Data Inspector)"):
         st.write("資料不齊全，無法顯示除錯表。")
 
 # 標示版本號 (放置於頁尾)
-st.markdown('<div class="version-footer">Powered by Pure Alpha Quantitative Engine | Version 8.8.9 (Sidebar Reveal Build)</div>', unsafe_allow_html=True)
+st.markdown('<div class="version-footer">Powered by Pure Alpha Quantitative Engine | Version 8.8.10 (Beta Matrix Exact Build)</div>', unsafe_allow_html=True)
