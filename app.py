@@ -151,18 +151,18 @@ dip_lv1_frac = dip_lv1 / 100.0
 dip_lv2_frac = dip_lv2 / 100.0
 
 # ==========================================
-# 4. 雙門檻 + 盤中觸價狀態機 (純 Numpy 陣列運算版)
+# 4. 雙門檻 + 盤中觸價狀態機 (Pandas 原生運算)
 # ==========================================
 df_all['MA200'] = df_all[tk_core].rolling(200).mean()
 df_all['SPX_Max'] = df_all[h_col].cummax()
 df_all['SPX_DD'] = df_all[l_col] / df_all['SPX_Max'] - 1
 
+regime_states = []
+current_state = 1 
+
 qqq_vals = df_all[tk_core].values
 ma200_vals = df_all['MA200'].values
 spx_dd_vals = df_all['SPX_DD'].values
-
-regime_states = np.ones(len(df_all), dtype=int)
-current_state = 1 
 
 for i in range(len(df_all)):
     q = qqq_vals[i]
@@ -170,7 +170,7 @@ for i in range(len(df_all)):
     spx_dd = spx_dd_vals[i]
     
     if pd.isna(ma):
-        regime_states[i] = 1
+        regime_states.append(1)
         continue
     
     if q >= ma * 1.04:
@@ -182,7 +182,7 @@ for i in range(len(df_all)):
     elif current_state == 1 and q < ma * 0.97 and spx_dd > -dip_lv1_frac:
         current_state = 0
         
-    regime_states[i] = current_state
+    regime_states.append(current_state)
 
 df_all['Regime'] = regime_states
 
@@ -190,30 +190,18 @@ mult_core_lev = k_value
 mult_bond_gold = 1.0 + (k_value - 1) * 0.525
 mult_usd = 2.0 - k_value
 
-# 全部使用 np.where 產生一維陣列，保證長度絕對一致
-w_core_tgt = np.where(regime_states == 0, BEAR_BASE[tk_core]/100.0, (BULL_BASE[tk_core]/100.0) * mult_core_lev)
-w_bond_tgt = np.where(regime_states == 0, BEAR_BASE[tk_bond]/100.0, (BULL_BASE[tk_bond]/100.0) * mult_bond_gold)
-w_gold_tgt = np.where(regime_states == 0, BEAR_BASE[tk_gold]/100.0, (BULL_BASE[tk_gold]/100.0) * mult_bond_gold)
-w_usd_tgt = np.where(regime_states == 0, BEAR_BASE[tk_usd]/100.0,  (BULL_BASE[tk_usd]/100.0) * mult_usd)
+tgt_weights_df = pd.DataFrame(index=df_all.index)
+tgt_weights_df[tk_core] = np.where(df_all['Regime'] == 0, BEAR_BASE[tk_core]/100.0, (BULL_BASE[tk_core]/100.0) * mult_core_lev)
+tgt_weights_df[tk_bond] = np.where(df_all['Regime'] == 0, BEAR_BASE[tk_bond]/100.0, (BULL_BASE[tk_bond]/100.0) * mult_bond_gold)
+tgt_weights_df[tk_gold] = np.where(df_all['Regime'] == 0, BEAR_BASE[tk_gold]/100.0, (BULL_BASE[tk_gold]/100.0) * mult_bond_gold)
+tgt_weights_df[tk_usd]  = np.where(df_all['Regime'] == 0, BEAR_BASE[tk_usd]/100.0,  (BULL_BASE[tk_usd]/100.0) * mult_usd)
 
-w_lev_tgt = np.zeros(len(df_all))
-w_lev_tgt = np.where(regime_states == 1, (BULL_BASE[tk_lev]/100.0) * mult_core_lev, w_lev_tgt)
-w_lev_tgt = np.where(regime_states == 19, 0.15 * mult_core_lev, w_lev_tgt)
-w_lev_tgt = np.where(regime_states == 30, 0.25 * mult_core_lev, w_lev_tgt)
+tgt_weights_df[tk_lev] = 0.0
+tgt_weights_df.loc[df_all['Regime'] == 1,  tk_lev] = (BULL_BASE[tk_lev]/100.0) * mult_core_lev
+tgt_weights_df.loc[df_all['Regime'] == 19, tk_lev] = 0.15 * mult_core_lev
+tgt_weights_df.loc[df_all['Regime'] == 30, tk_lev] = 0.25 * mult_core_lev
 
-# 計算安全部位
-sum_others = w_core_tgt + w_lev_tgt + w_bond_tgt + w_gold_tgt + w_usd_tgt
-w_safe_tgt = np.maximum(0, 1.0 - sum_others)
-
-# 統一組裝成 DataFrame
-tgt_weights_df = pd.DataFrame({
-    tk_core: w_core_tgt,
-    tk_lev: w_lev_tgt,
-    tk_bond: w_bond_tgt,
-    tk_gold: w_gold_tgt,
-    tk_usd: w_usd_tgt,
-    tk_safe: w_safe_tgt
-}, index=df_all.index)
+tgt_weights_df[tk_safe] = np.maximum(0, 1.0 - tgt_weights_df[[tk_core, tk_lev, tk_bond, tk_gold, tk_usd]].sum(axis=1))
 
 targets = (tgt_weights_df.loc[df_all.index[-1]] * 100).to_dict()
 
@@ -267,17 +255,15 @@ with col2:
         
         bench_ret = df_all[bench_choice].pct_change().tail(window_choice).dropna()
         if not recent_ret.empty and not bench_ret.empty and len(recent_ret) == len(bench_ret):
-            p_ret_series = recent_ret.dot(w_array).values
-            b_ret_series = bench_ret.values
-            cov_val = np.cov(p_ret_series, b_ret_series)[0, 1]
-            var_val = np.var(b_ret_series, ddof=1)
-            p_beta = (cov_val * 252) / (var_val * 252) if var_val > 0 else 0.0
+            p_ret_series = recent_ret.dot(w_array)
+            # 確保使用 float 型態
+            p_beta = float((p_ret_series.cov(bench_ret) * 252) / (bench_ret.var() * 252))
         else:
             p_beta = 0.0
             
         risk_status = '<span class="c-green">進攻效能優異 (RISK ON)</span>' if p_beta > 0.7 else '<span class="c-red">避險防禦狀態 (RISK OFF)</span>'
     else:
-        p_vol, p_beta = 0, 0
+        p_vol, p_beta = 0.0, 0.0
         risk_status = "資料不足"
         
     html_card2 = f"""
@@ -304,16 +290,9 @@ for asset in AVAILABLE_ASSETS:
     vol_str = f"{recent_ret[asset].std() * np.sqrt(252) * 100:.1f}%" if 'recent_ret' in locals() and asset in recent_ret else "0.0%"
     
     if 'recent_ret' in locals() and asset in recent_ret and 'bench_ret' in locals() and not bench_ret.empty:
-        a_ret = recent_ret[asset].values
-        b_ret = bench_ret.values
-        if len(a_ret) == len(b_ret) and len(a_ret) > 1:
-            corr = np.corrcoef(a_ret, b_ret)[0, 1]
-            cov_val = np.cov(a_ret, b_ret)[0, 1]
-            var_val = np.var(b_ret, ddof=1)
-            beta_val = cov_val / var_val if var_val > 0 else 0.0
-            beta_str = f"{beta_val:.2f}"
-        else:
-             corr, beta_str = 0.0, "0.00"
+        corr_val = float(recent_ret[asset].corr(bench_ret))
+        beta_val = float(recent_ret[asset].cov(bench_ret) / bench_ret.var())
+        corr, beta_str = corr_val, f"{beta_val:.2f}"
     else:
         corr, beta_str = 0.0, "0.00"
         
@@ -341,7 +320,6 @@ with col_beta:
     st.markdown(f"<h2 style='color: #38bdf8; font-size: 18px; border-left: 4px solid #38bdf8; padding-left: 10px; margin-bottom: 10px;'>動態 Beta 趨勢 (即時還原真實歷史軌跡)</h2>", unsafe_allow_html=True)
     
     if len(AVAILABLE_ASSETS) > 0 and bench_choice in df_all.columns:
-        # 確保提取時不會有重複的欄位
         cols_to_extract = list(set(AVAILABLE_ASSETS + [bench_choice]))
         ret_all = df_all[cols_to_extract].pct_change().dropna()
         
@@ -438,14 +416,10 @@ if len(bt_df) > 10 and len(valid_assets) > 0 and bench_choice in bt_df.columns:
     sharpe = (cagr - 0.04) / bt_vol if bt_vol > 0 else 0
     bench_sharpe = (bench_cagr - 0.04) / bench_vol if bench_vol > 0 else 0
     
-    p_series = port_daily_ret_series.values
-    b_series = bt_ret[bench_choice].values
-    if len(p_series) == len(b_series) and len(p_series) > 1:
-        cov_val = np.cov(p_series, b_series)[0, 1]
-        var_val = np.var(b_series, ddof=1)
-        bt_beta = cov_val / var_val if var_val > 0 else 0.0
-    else:
-        bt_beta = 0.0
+    # 強制使用 Pandas 原生計算，並確保輸出為 float
+    bt_cov = float(port_daily_ret_series.cov(bt_ret[bench_choice]))
+    bt_var = float(bt_ret[bench_choice].var())
+    bt_beta = bt_cov / bt_var if bt_var > 0 else 0.0
     
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=cum_port.index, y=cum_port.values, mode='lines', name='Pure Alpha (策略組合)', line=dict(color='#38bdf8', width=2)))
@@ -521,4 +495,4 @@ with st.expander("🔍 歷史回撤與觸發除錯檢視 (Data Inspector)"):
         st.write("資料不齊全，無法顯示除錯表。")
 
 # 標示版本號 (放置於頁尾)
-st.markdown('<div class="version-footer">Powered by Pure Alpha Quantitative Engine | Version 8.8.8 (Ultimate Stable Build)</div>', unsafe_allow_html=True)
+st.markdown('<div class="version-footer">Powered by Pure Alpha Quantitative Engine | Version 8.8.8 (Beta Absolute Stable Build)</div>', unsafe_allow_html=True)
