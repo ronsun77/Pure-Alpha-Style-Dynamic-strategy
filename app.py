@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 # ==========================================
 # 0. 網頁基礎設定與終極 CSS 外掛注入
 # ==========================================
-st.set_page_config(page_title="Pure Alpha 戰情室 V8.6", layout="wide")
+st.set_page_config(page_title="Pure Alpha 戰情室 V8.7", layout="wide")
 
 custom_css = """
 <style>
@@ -63,13 +63,18 @@ def load_data():
     return pd.DataFrame()
 
 df_all = load_data()
+# 動態過濾：只保留真正下載成功的欄位，防呆機制
+PRICE_COLS = [c for c in PRICE_COLS if c in df_all.columns]
 
 # ==========================================
-# 2. 雙門檻 + 階梯抄底記憶狀態機 (對齊真實 SPX 指數)
+# 2. 雙門檻 + 階梯抄底記憶狀態機
 # ==========================================
 df_all['MA200'] = df_all['QQQ'].rolling(200).mean()
-df_all['SPX_Max'] = df_all['^GSPC'].cummax()
-df_all['SPX_DD'] = df_all['^GSPC'] / df_all['SPX_Max'] - 1
+
+# 關鍵防呆：如果 ^GSPC 遭 Yahoo 阻擋，自動無縫降級使用 SPY
+spx_col = '^GSPC' if '^GSPC' in df_all.columns else 'SPY'
+df_all['SPX_Max'] = df_all[spx_col].cummax()
+df_all['SPX_DD'] = df_all[spx_col] / df_all['SPX_Max'] - 1
 
 regime_states = [] # 狀態映射：0=熊市防禦, 1=常態牛市, 19=19%抄底鎖定, 30=30%極度抄底鎖定
 current_state = 1 
@@ -124,7 +129,7 @@ w_tlt_tgt = np.where(df_all['Regime'] == 0, BEAR_BASE["TLT"], BULL_BASE["TLT"] *
 w_gld_tgt = np.where(df_all['Regime'] == 0, BEAR_BASE["GLD"], BULL_BASE["GLD"] * mult_tlt_gld)
 w_uup_tgt = np.where(df_all['Regime'] == 0, BEAR_BASE["UUP"], BULL_BASE["UUP"] * mult_uup)
 
-# 精準寫入你的階梯式抄底 QLD 權重邏輯
+# 精準寫入階梯式抄底 QLD 權重邏輯
 w_qld_tgt = np.where(df_all['Regime'] == 30, 25.0 * mult_qqq_qld,
             np.where(df_all['Regime'] == 19, 15.0 * mult_qqq_qld,
             np.where(df_all['Regime'] == 1, BULL_BASE["QLD"] * mult_qqq_qld, BEAR_BASE["QLD"])))
@@ -162,14 +167,14 @@ ratio = sim_qqq / sim_ma200 if sim_ma200 > 0 else 1.0
 # ==========================================
 # 4. 前端總覽面板渲染
 # ==========================================
-st.markdown("<h1 style='color:white; font-weight:bold;'>Pure Alpha 戰情室 V8.6</h1>", unsafe_allow_html=True)
+st.markdown("<h1 style='color:white; font-weight:bold;'>Pure Alpha 戰情室 V8.7</h1>", unsafe_allow_html=True)
 col1, col2 = st.columns([1, 1])
 
 with col1:
     spx_dd_html = f"{current_spx_dd * 100:.2f}%" if not df_all.empty else "-9.79%"
     html_card1 = f"""
     <div class="cyber-card">
-        <h2>市場 Regime Engine (真實 SPX 聯動)</h2>
+        <h2>市場 Regime Engine (防呆保護版)</h2>
         <div class="metric-row"><span class="m-label">QQQ 當前價格</span><span class="m-value c-yellow">{sim_qqq:.2f}</span></div>
         <div class="metric-row"><span class="m-label">QQQ MA200 均線</span><span class="m-value">{sim_ma200:.2f}</span></div>
         <div class="metric-row"><span class="m-label">SPX 真實回撤</span><span class="m-value c-yellow">{spx_dd_html}</span></div>
@@ -180,7 +185,6 @@ with col1:
     st.markdown(html_card1.replace('\n', ''), unsafe_allow_html=True)
 
 with col2:
-    # 限制漲跌幅運算只看合法的價格欄位，阻絕指標欄位觸發除以零錯誤
     recent_ret = df_all[PRICE_COLS].pct_change().tail(window_choice).dropna()
     w_array = np.array([targets[a] / 100 for a in ["QQQ", "QLD", "TLT", "GLD", "UUP", "SGOV"]])
     cov_matrix = recent_ret[["QQQ", "QLD", "TLT", "GLD", "UUP", "SGOV"]].cov() * 252
@@ -223,7 +227,7 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 5. 視覺化圖表區塊 (完美還原 2025/4 抄底突起)
+# 5. 視覺化圖表區塊 
 # ==========================================
 col_pie, col_beta = st.columns([1, 2.2])
 
@@ -245,7 +249,6 @@ with col_beta:
     for asset in ["QQQ", "QLD", "TLT", "GLD", "UUP", "SGOV"]:
         fig_beta.add_trace(go.Scatter(x=roll_beta.index, y=roll_beta[asset], mode='lines', name=asset, line=dict(color=CHART_COLORS[asset], width=1.5, dash='dot')))
     
-    # 組合實倉動態 Rolling Beta：完美對齊每日策略歷史權重
     w_hist_aligned = tgt_weights_df.loc[roll_beta.index]
     port_beta_dynamic = (roll_beta[["QQQ", "QLD", "TLT", "GLD", "UUP", "SGOV"]] * w_hist_aligned).sum(axis=1)
     
@@ -256,7 +259,7 @@ with col_beta:
 st.markdown("---")
 
 # ==========================================
-# 6. 高級路徑依賴回測引擎 (具備漂移與門檻切換機制)
+# 6. 高級路徑依賴回測引擎 
 # ==========================================
 st.markdown("<h2 style='color: #38bdf8; font-size: 22px; border-left: 5px solid #38bdf8; padding-left: 10px; margin-bottom: 20px;'>歷史回測與分析引擎 (Path-Dependent Rebalance)</h2>", unsafe_allow_html=True)
 
@@ -291,7 +294,6 @@ if len(bt_df) > 10:
         if i < n_days - 1:
             tgt_w = tgt_array[i+1]
             deviations = np.abs(drifted_w - tgt_w)
-            # 觸發條件：資產漂移超過滑桿設定的 %，或牛熊環境/抄底狀態發生改變
             if np.max(deviations) >= threshold_frac:
                 current_w = tgt_w.copy()
                 rebalance_count += 1
