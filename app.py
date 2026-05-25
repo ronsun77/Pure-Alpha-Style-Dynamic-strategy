@@ -11,9 +11,10 @@ from datetime import datetime, timedelta
 # ==========================================
 st.set_page_config(page_title="Pure Alpha 多資產對沖策略戰情室", layout="wide")
 
+# 修正：把 header {visibility: hidden;} 拿掉，讓你可以點擊左上角按鈕叫出側邊欄
 custom_css = """
 <style>
-    #MainMenu {visibility: hidden;} footer {visibility: hidden;} header {visibility: hidden;}
+    #MainMenu {visibility: hidden;} footer {visibility: hidden;} 
     .stApp { background-color: #081028; font-family: 'Segoe UI', Arial, sans-serif; }
     .cyber-card { background: #17233a; border-radius: 20px; padding: 24px; box-shadow: 0 4px 25px rgba(0,0,0,0.35); border: 1px solid #24334d; margin-bottom: 20px; color: #e2e8f0; height: 100%; }
     .cyber-card h2 { color: #38bdf8; margin-bottom: 20px; font-size: 20px; border-left: 4px solid #38bdf8; padding-left: 10px; }
@@ -416,10 +417,14 @@ if len(bt_df) > 10 and len(valid_assets) > 0 and bench_choice in bt_df.columns:
     sharpe = (cagr - 0.04) / bt_vol if bt_vol > 0 else 0
     bench_sharpe = (bench_cagr - 0.04) / bench_vol if bench_vol > 0 else 0
     
-    # 強制使用 Pandas 原生計算，並確保輸出為 float
-    bt_cov = float(port_daily_ret_series.cov(bt_ret[bench_choice]))
-    bt_var = float(bt_ret[bench_choice].var())
-    bt_beta = bt_cov / bt_var if bt_var > 0 else 0.0
+    p_series = port_daily_ret_series.values
+    b_series = bt_ret[bench_choice].values
+    if len(p_series) == len(b_series) and len(p_series) > 1:
+        cov_val = np.cov(p_series, b_series)[0, 1]
+        var_val = np.var(b_series, ddof=1)
+        bt_beta = cov_val / var_val if var_val > 0 else 0.0
+    else:
+        bt_beta = 0.0
     
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=cum_port.index, y=cum_port.values, mode='lines', name='Pure Alpha (策略組合)', line=dict(color='#38bdf8', width=2)))
@@ -495,4 +500,4 @@ with st.expander("🔍 歷史回撤與觸發除錯檢視 (Data Inspector)"):
         st.write("資料不齊全，無法顯示除錯表。")
 
 # 標示版本號 (放置於頁尾)
-st.markdown('<div class="version-footer">Powered by Pure Alpha Quantitative Engine | Version 8.8.8 (Beta Absolute Stable Build)</div>', unsafe_allow_html=True)
+st.markdown('<div class="version-footer">Powered by Pure Alpha Quantitative Engine | Version 8.8.9 (Sidebar Reveal Build)</div>', unsafe_allow_html=True)
