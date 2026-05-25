@@ -104,7 +104,8 @@ if spx_col == '^GSPC':
 else:
     h_col, l_col = 'SPY_High', 'SPY_Low'
 
-CHART_PRICE_COLS = [c for c in PORTFOLIO_ASSETS if c in df_all.columns]
+# 防呆機制：過濾出實際存在於 df_all 的標的
+AVAILABLE_ASSETS = [c for c in PORTFOLIO_ASSETS if c in df_all.columns]
 
 # ==========================================
 # 3. 滑桿參數提取
@@ -170,7 +171,6 @@ w_bond_tgt = np.where(df_all['Regime'] == 0, BEAR_BASE[tk_bond], BULL_BASE[tk_bo
 w_gold_tgt = np.where(df_all['Regime'] == 0, BEAR_BASE[tk_gold], BULL_BASE[tk_gold] * mult_bond_gold)
 w_usd_tgt = np.where(df_all['Regime'] == 0, BEAR_BASE[tk_usd], BULL_BASE[tk_usd] * mult_usd)
 
-# 徹底解決 ValueError：統一使用 np.select 確保產生長度一致的一維陣列
 condlist = [df_all['Regime'] == 30, df_all['Regime'] == 19, df_all['Regime'] == 1]
 choicelist = [25.0 * mult_core_lev, 15.0 * mult_core_lev, BULL_BASE[tk_lev] * mult_core_lev]
 w_lev_tgt = np.select(condlist, choicelist, default=0.0)
@@ -229,11 +229,11 @@ with col1:
     st.markdown(html_card1.replace('\n', ''), unsafe_allow_html=True)
 
 with col2:
-    recent_ret = df_all[CHART_PRICE_COLS].pct_change().tail(window_choice).dropna()
-    w_array = np.array([targets[a] / 100 for a in PORTFOLIO_ASSETS])
+    recent_ret = df_all[AVAILABLE_ASSETS].pct_change().tail(window_choice).dropna()
+    w_array = np.array([targets[a] / 100 for a in AVAILABLE_ASSETS])
     cov_matrix = recent_ret.cov() * 252
-    p_vol = np.sqrt(np.dot(w_array.T, np.dot(cov_matrix, w_array)))
-    p_beta = (recent_ret.dot(w_array).cov(df_all[bench_choice].pct_change().tail(window_choice).dropna()) * 252) / (df_all[bench_choice].pct_change().tail(window_choice).dropna().var() * 252)
+    p_vol = np.sqrt(np.dot(w_array.T, np.dot(cov_matrix, w_array))) if len(AVAILABLE_ASSETS) > 0 else 0
+    p_beta = (recent_ret.dot(w_array).cov(df_all[bench_choice].pct_change().tail(window_choice).dropna()) * 252) / (df_all[bench_choice].pct_change().tail(window_choice).dropna().var() * 252) if len(AVAILABLE_ASSETS) > 0 else 0
     risk_status = '<span class="c-green">進攻效能優異 (RISK ON)</span>' if p_beta > 0.7 else '<span class="c-red">避險防禦狀態 (RISK OFF)</span>'
     html_card2 = f"""
     <div class="cyber-card">
@@ -248,19 +248,19 @@ with col2:
 
 table_rows = ""
 is_bull_now = df_all['Regime'].iloc[-1] in [1, 19, 30]
-for asset in PORTFOLIO_ASSETS:
-    cur, tgt = CURRENT_WEIGHTS.get(asset, 0), targets[asset]
+for asset in AVAILABLE_ASSETS:
+    cur, tgt = CURRENT_WEIGHTS.get(asset, 0), targets.get(asset, 0)
     diff = tgt - cur
     action, act_class = "HOLD", "badge-hold"
     if diff >= threshold: action, act_class = "BUY", "badge-buy"
     elif diff <= -threshold: action, act_class = "SELL", "badge-sell"
     if not is_bull_now and asset == tk_lev and cur > tgt: action, act_class = "REDUCE", "badge-critical"
     
-    vol_str = f"{recent_ret[asset].std() * np.sqrt(252) * 100:.1f}%"
-    corr = recent_ret[asset].corr(df_all[bench_choice].pct_change().tail(window_choice).dropna())
-    beta_str = f"{recent_ret[asset].cov(df_all[bench_choice].pct_change().tail(window_choice).dropna()) / df_all[bench_choice].pct_change().tail(window_choice).dropna().var():.2f}"
+    vol_str = f"{recent_ret[asset].std() * np.sqrt(252) * 100:.1f}%" if asset in recent_ret else "0.0%"
+    corr = recent_ret[asset].corr(df_all[bench_choice].pct_change().tail(window_choice).dropna()) if asset in recent_ret else 0.0
+    beta_str = f"{recent_ret[asset].cov(df_all[bench_choice].pct_change().tail(window_choice).dropna()) / df_all[bench_choice].pct_change().tail(window_choice).dropna().var():.2f}" if asset in recent_ret else "0.0"
     bg_color = "background: rgba(56, 189, 248, 0.05);" if asset == tk_safe else ""
-    table_rows += f'<tr style="{bg_color}"><td style="text-align:left; padding-left:15px;"><b>{asset}</b> <span style="color:#64748b; font-size:13px;">{ASSET_ROLES[asset]}</span></td><td style="font-family:monospace;">{cur:.2f}%</td><td style="font-family:monospace; font-weight:bold; color:white;">{tgt:.2f}%</td><td style="font-family:monospace; color:{"#22c55e" if diff>=0 else "#ef4444"};">{diff:+.2f}%</td><td style="font-family:monospace; color:#38bdf8;">{vol_str}</td><td style="font-family:monospace; color:{"#22c55e" if corr>0.4 else "#ef4444" if corr<-0.1 else "#facc15"};">{corr:.2f}</td><td style="font-family:monospace;">{beta_str}</td><td><span class="badge-action {act_class}">{action}</span></td></tr>'
+    table_rows += f'<tr style="{bg_color}"><td style="text-align:left; padding-left:15px;"><b>{asset}</b> <span style="color:#64748b; font-size:13px;">{ASSET_ROLES.get(asset,"")}</span></td><td style="font-family:monospace;">{cur:.2f}%</td><td style="font-family:monospace; font-weight:bold; color:white;">{tgt:.2f}%</td><td style="font-family:monospace; color:{"#22c55e" if diff>=0 else "#ef4444"};">{diff:+.2f}%</td><td style="font-family:monospace; color:#38bdf8;">{vol_str}</td><td style="font-family:monospace; color:{"#22c55e" if corr>0.4 else "#ef4444" if corr<-0.1 else "#facc15"};">{corr:.2f}</td><td style="font-family:monospace;">{beta_str}</td><td><span class="badge-action {act_class}">{action}</span></td></tr>'
 
 st.markdown(f"""
 <div class="cyber-card" style="margin-bottom:30px;">
@@ -275,24 +275,24 @@ col_pie, col_beta = st.columns([1, 2.2])
 
 with col_pie:
     st.markdown("<h2 style='color: #38bdf8; font-size: 18px; border-left: 4px solid #38bdf8; padding-left: 10px; margin-bottom: 10px;'>目前實倉資產配比</h2>", unsafe_allow_html=True)
-    fig_pie = go.Figure(data=[go.Pie(labels=PORTFOLIO_ASSETS, values=[CURRENT_WEIGHTS.get(a,0) for a in PORTFOLIO_ASSETS], hole=.45, textinfo='label+percent', marker=dict(colors=[CHART_COLORS.get(l, "#94a3b8") for l in PORTFOLIO_ASSETS], line=dict(color='#081028', width=2)))])
+    fig_pie = go.Figure(data=[go.Pie(labels=AVAILABLE_ASSETS, values=[CURRENT_WEIGHTS.get(a,0) for a in AVAILABLE_ASSETS], hole=.45, textinfo='label+percent', marker=dict(colors=[CHART_COLORS.get(l, "#94a3b8") for l in AVAILABLE_ASSETS], line=dict(color='#081028', width=2)))])
     fig_pie.update_layout(template='plotly_dark', paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', margin=dict(l=20, r=20, t=10, b=20), height=320, showlegend=False)
     st.plotly_chart(fig_pie, use_container_width=True)
 
 with col_beta:
     st.markdown(f"<h2 style='color: #38bdf8; font-size: 18px; border-left: 4px solid #38bdf8; padding-left: 10px; margin-bottom: 10px;'>動態 Beta 趨勢 (即時還原真實歷史軌跡)</h2>", unsafe_allow_html=True)
     
-    ret_all = df_all[PORTFOLIO_ASSETS + [bench_choice]].pct_change().dropna()
-    roll_cov = ret_all[PORTFOLIO_ASSETS].rolling(window=window_choice).cov(ret_all[bench_choice])
+    ret_all = df_all[AVAILABLE_ASSETS + [bench_choice]].pct_change().dropna()
+    roll_cov = ret_all[AVAILABLE_ASSETS].rolling(window=window_choice).cov(ret_all[bench_choice])
     roll_var = ret_all[bench_choice].rolling(window=window_choice).var()
     roll_beta = roll_cov.div(roll_var, axis=0).dropna().tail(504)
     
     fig_beta = go.Figure()
-    for asset in PORTFOLIO_ASSETS:
+    for asset in AVAILABLE_ASSETS:
         fig_beta.add_trace(go.Scatter(x=roll_beta.index, y=roll_beta[asset], mode='lines', name=asset, line=dict(color=CHART_COLORS.get(asset, "#94a3b8"), width=1.5, dash='dot')))
     
     w_hist_aligned = tgt_weights_df.loc[roll_beta.index]
-    port_beta_dynamic = (roll_beta[PORTFOLIO_ASSETS] * w_hist_aligned).sum(axis=1)
+    port_beta_dynamic = (roll_beta[AVAILABLE_ASSETS] * w_hist_aligned[AVAILABLE_ASSETS]).sum(axis=1)
     
     fig_beta.add_trace(go.Scatter(x=port_beta_dynamic.index, y=port_beta_dynamic, mode='lines', name='策略組合 (Dynamic Portfolio)', line=dict(color='#22c55e', width=3.5)))
     fig_beta.update_layout(template='plotly_dark', paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', margin=dict(l=10, r=20, t=10, b=10), height=320, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
@@ -313,15 +313,19 @@ end_date = col_d2.date_input("回測結束日", max_date, min_value=min_date, ma
 bt_mask = (df_all.index.date >= start_date) & (df_all.index.date <= end_date)
 bt_df = df_all.loc[bt_mask]
 
-if len(bt_df) > 10:
-    bt_ret = bt_df[PORTFOLIO_ASSETS + [bench_choice]].pct_change().dropna()
+# 關鍵防呆：只拿有成功下載到的資產來回測
+valid_assets = [a for a in PORTFOLIO_ASSETS if a in bt_df.columns]
+valid_cols = valid_assets + [bench_choice]
+
+if len(bt_df) > 10 and len(valid_assets) > 0:
+    bt_ret = bt_df[valid_cols].pct_change().dropna()
     tgt_weights_sub = tgt_weights_df.loc[bt_ret.index]
     
     n_days = len(bt_ret)
     port_nav = np.zeros(n_days)
     
-    ret_array = bt_ret[PORTFOLIO_ASSETS].values
-    tgt_array = tgt_weights_sub[PORTFOLIO_ASSETS].values
+    ret_array = bt_ret[valid_assets].values
+    tgt_array = tgt_weights_sub[valid_assets].values
     
     current_w = tgt_array[0].copy()
     threshold_frac = threshold / 100.0
@@ -422,7 +426,7 @@ if len(bt_df) > 10:
     """
     st.markdown(report_html.replace('\n', ''), unsafe_allow_html=True)
 else:
-    st.warning("資料不足。")
+    st.warning("資料不足。請確認所選回測期間內，所有資產代碼皆有歷史價格數據。")
 
 # ==========================================
 # 8. 除錯透視鏡 (隱藏面板)
