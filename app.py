@@ -61,30 +61,29 @@ ASSET_ROLES = {tk_core: "核心成長引擎", tk_lev: "動能槓桿放大", tk_b
 CHART_COLORS = {tk_core: "#38bdf8", tk_lev: "#818cf8", tk_bond: "#f472b6", tk_gold: "#facc15", tk_usd: "#ef4444", tk_safe: "#94a3b8"}
 
 # ==========================================
-# 2. 核心資料下載引擎
+# 2. 核心資料下載引擎 (升級為 20年+ 且解決新舊 ETF 長度問題)
 # ==========================================
-@st.cache_data(ttl=3600, show_spinner=False) # 關閉預設的 loading spinner，自己處理狀態
+@st.cache_data(ttl=3600, show_spinner=False)
 def load_data(tickers_tuple):
     data_dict = {}
     for t in tickers_tuple:
         try:
-            # 增加一些重試機制，對抗不穩定的 API
             for _ in range(3):
-                df = yf.download(t, period="10y", progress=False)
+                # 升級：將 period="10y" 改為 "max"，獲取最長歷史
+                df = yf.download(t, period="max", progress=False)
                 if not df.empty and 'Close' in df.columns:
                     data_dict[t] = df['Close'].iloc[:, 0] if isinstance(df['Close'], pd.DataFrame) else df['Close']
                     if t == "SPY":
                         data_dict["SPY_High"] = df['High'].iloc[:, 0] if isinstance(df['High'], pd.DataFrame) else df['High']
                         data_dict["SPY_Low"] = df['Low'].iloc[:, 0] if isinstance(df['Low'], pd.DataFrame) else df['Low']
-                    break # 成功下載就跳出重試迴圈
-                time.sleep(1) # 失敗的話等一秒再試
+                    break
+                time.sleep(1)
         except Exception: 
             pass
     
-    # 獨立抓取 SPX
     for _ in range(3):
         try:
-            spx_df = yf.download("^GSPC", period="10y", progress=False)
+            spx_df = yf.download("^GSPC", period="max", progress=False)
             if not spx_df.empty and 'Close' in spx_df.columns:
                 data_dict["^GSPC"] = spx_df['Close'].iloc[:, 0] if isinstance(spx_df['Close'], pd.DataFrame) else spx_df['Close']
                 data_dict["SPX_High"] = spx_df['High'].iloc[:, 0] if isinstance(spx_df['High'], pd.DataFrame) else spx_df['High']
@@ -94,40 +93,34 @@ def load_data(tickers_tuple):
             time.sleep(1)
 
     if data_dict: 
-        return pd.concat(data_dict, axis=1).dropna()
+        # 升級：捨棄 .dropna()，改用 .ffill().bfill() 確保年輕的 ETF 不會導致老 ETF 的歷史被刪除
+        return pd.concat(data_dict, axis=1).ffill().bfill()
     return pd.DataFrame()
 
-# 開始下載資料
 fetch_list = tuple(set(PORTFOLIO_ASSETS + ["SPY"]))
 
-with st.spinner('正在從 Yahoo Finance 同步最新市場數據...'):
+with st.spinner('正在從 Yahoo Finance 同步長期歷史市場數據...'):
     df_all = load_data(fetch_list)
 
-# 嚴格的防呆機制：確保必要的資料都存在
 missing_assets = [a for a in PORTFOLIO_ASSETS if a not in df_all.columns]
 
 if df_all.empty:
-    st.error("🚨 無法連接至 Yahoo Finance 獲取任何市場數據，這通常是雲端伺服器暫時被阻擋，請稍後重整網頁再試。")
+    st.error("🚨 無法連接至 Yahoo Finance 獲取任何市場數據，請稍後重整網頁再試。")
     st.stop()
     
 if tk_core not in df_all.columns:
-    st.error(f"🚨 核心標的 '{tk_core}' 下載失敗！無法執行策略計算，請確認代碼是否正確，或稍後再試。")
+    st.error(f"🚨 核心標的 '{tk_core}' 下載失敗！無法執行策略計算。")
     st.stop()
 
-if missing_assets:
-    st.warning(f"⚠️ 以下標的資料下載失敗：{', '.join(missing_assets)}。系統將只顯示成功獲取的資產，但回測與權重計算可能不完整。")
-
-# 決定基準指數
 spx_col = '^GSPC' if '^GSPC' in df_all.columns else 'SPY'
 if spx_col == '^GSPC':
     h_col, l_col = 'SPX_High', 'SPX_Low'
 else:
     h_col, l_col = 'SPY_High', 'SPY_Low'
     if 'SPY_High' not in df_all.columns or 'SPY_Low' not in df_all.columns:
-         st.error("🚨 基準大盤 (SPY) 的盤中高低點資料下載失敗，無法計算真實回撤。請稍後再試。")
+         st.error("🚨 基準大盤 (SPY) 的盤中高低點資料下載失敗，無法計算真實回撤。")
          st.stop()
 
-# 過濾出實際存在於 df_all 的標的，避免後續 KeyError
 AVAILABLE_ASSETS = [c for c in PORTFOLIO_ASSETS if c in df_all.columns]
 CHART_PRICE_COLS = AVAILABLE_ASSETS
 
@@ -159,8 +152,6 @@ dip_lv2_frac = dip_lv2 / 100.0
 # 4. 雙門檻 + 盤中觸價狀態機
 # ==========================================
 df_all['MA200'] = df_all[tk_core].rolling(200).mean()
-
-# 盤中真實回撤
 df_all['SPX_Max'] = df_all[h_col].cummax()
 df_all['SPX_DD'] = df_all[l_col] / df_all['SPX_Max'] - 1
 
@@ -189,7 +180,6 @@ for i in range(len(df_all)):
 
 df_all['Regime'] = regime_states
 
-# 動態權重生成矩陣
 mult_core_lev = k_value
 mult_bond_gold = 1.0 + (k_value - 1) * 0.525
 mult_usd = 2.0 - k_value
@@ -364,7 +354,8 @@ valid_assets = [a for a in PORTFOLIO_ASSETS if a in bt_df.columns]
 valid_cols = valid_assets + [bench_choice] if bench_choice in bt_df.columns else valid_assets
 
 if len(bt_df) > 10 and len(valid_assets) > 0 and bench_choice in bt_df.columns:
-    bt_ret = bt_df[valid_cols].pct_change().dropna()
+    # 升級：在進行回測前先填補任何潛在的 NaN 漏洞，確保策略不會因為新 ETF 缺資料而閃退
+    bt_ret = bt_df[valid_cols].ffill().bfill().pct_change().dropna()
     tgt_weights_sub = tgt_weights_df.loc[bt_ret.index]
     
     n_days = len(bt_ret)
@@ -381,7 +372,12 @@ if len(bt_df) > 10 and len(valid_assets) > 0 and bench_choice in bt_df.columns:
         day_ret = ret_array[i]
         daily_p_ret = np.dot(current_w, day_ret)
         port_nav[i] = (1.0 * (1 + daily_p_ret)) if i == 0 else (port_nav[i-1] * (1 + daily_p_ret))
-        drifted_w = current_w * (1 + day_ret) / (1 + daily_p_ret)
+        
+        # 修正：避免因為 0 報酬而產生除以 0 的錯誤
+        if (1 + daily_p_ret) == 0:
+            drifted_w = current_w.copy()
+        else:
+            drifted_w = current_w * (1 + day_ret) / (1 + daily_p_ret)
         
         if i < n_days - 1:
             tgt_w = tgt_array[i+1]
@@ -487,4 +483,4 @@ with st.expander("🔍 歷史回撤與觸發除錯檢視 (Data Inspector)"):
         st.write("資料不齊全，無法顯示除錯表。")
 
 # 標示版本號 (放置於頁尾)
-st.markdown('<div class="version-footer">Powered by Pure Alpha Quantitative Engine | Version 8.8.1 (Robust Loading)</div>', unsafe_allow_html=True)
+st.markdown('<div class="version-footer">Powered by Pure Alpha Quantitative Engine | Version 8.8.2 (20-Year Full History Build)</div>', unsafe_allow_html=True)
