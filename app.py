@@ -41,22 +41,33 @@ custom_css = """
 st.markdown(custom_css, unsafe_allow_html=True)
 
 # ==========================================
-# 1. 核心參數與資料下載 (高低點與指數融合)
+# 1. 側邊欄：動態資產代碼自訂
 # ==========================================
-PRICE_COLS = ["QQQ", "QLD", "TLT", "GLD", "UUP", "SGOV", "SPY"]
-CURRENT_WEIGHTS = {"QQQ": 28.71, "QLD": 35.66, "TLT": 7.80, "GLD": 7.65, "UUP": 8.00, "SGOV": 12.18}
-BULL_BASE = {"QQQ": 26.0, "QLD": 32.0, "TLT": 7.0, "GLD": 7.0, "UUP": 9.0}
+st.sidebar.markdown("<h2 style='color:#38bdf8;'>動態參數調控</h2>", unsafe_allow_html=True)
+with st.sidebar.expander("⚙️ 自訂資產代碼 (ETF Tickers)", expanded=False):
+    tk_core = st.text_input("核心成長引擎 (預設 QQQ)", "QQQ").upper()
+    tk_lev  = st.text_input("動能槓桿放大 (預設 QLD)", "QLD").upper()
+    tk_bond = st.text_input("長債負相關避險 (預設 TLT)", "TLT").upper()
+    tk_gold = st.text_input("抗通膨終極防禦 (預設 GLD)", "GLD").upper()
+    tk_usd  = st.text_input("美元流動性避險 (預設 UUP)", "UUP").upper()
+    tk_safe = st.text_input("流動性海綿池 (預設 SGOV)", "SGOV").upper()
 
-# 修正：完美還原 Excel 表格的 Bear Base 原始矩陣
-BEAR_BASE = {"QQQ": 20.0, "QLD": 20.0, "TLT": 10.0, "GLD": 10.0, "UUP": 20.0}
+PORTFOLIO_ASSETS = [tk_core, tk_lev, tk_bond, tk_gold, tk_usd, tk_safe]
 
-ASSET_ROLES = {"QQQ": "核心成長引擎", "QLD": "動能槓桿放大", "TLT": "長債負相關避險", "GLD": "抗通膨終極防禦", "UUP": "美元流動性避險", "SGOV": "流動性海綿池"}
-CHART_COLORS = {"QQQ": "#38bdf8", "QLD": "#818cf8", "TLT": "#f472b6", "GLD": "#facc15", "UUP": "#ef4444", "SGOV": "#94a3b8"}
+# 動態替換字典與權重基準
+CURRENT_WEIGHTS = {tk_core: 28.71, tk_lev: 35.66, tk_bond: 7.80, tk_gold: 7.65, tk_usd: 8.00, tk_safe: 12.18}
+BULL_BASE = {tk_core: 26.0, tk_lev: 32.0, tk_bond: 7.0, tk_gold: 7.0, tk_usd: 9.0}
+BEAR_BASE = {tk_core: 20.0, tk_lev: 20.0, tk_bond: 10.0, tk_gold: 10.0, tk_usd: 20.0}
+ASSET_ROLES = {tk_core: "核心成長引擎", tk_lev: "動能槓桿放大", tk_bond: "長債負相關避險", tk_gold: "抗通膨終極防禦", tk_usd: "美元流動性避險", tk_safe: "流動性海綿池"}
+CHART_COLORS = {tk_core: "#38bdf8", tk_lev: "#818cf8", tk_bond: "#f472b6", tk_gold: "#facc15", tk_usd: "#ef4444", tk_safe: "#94a3b8"}
 
+# ==========================================
+# 2. 核心資料下載引擎 (引入動態 Tuple 避免 Cache 混亂)
+# ==========================================
 @st.cache_data(ttl=3600)
-def load_data():
+def load_data(tickers_tuple):
     data_dict = {}
-    for t in PRICE_COLS:
+    for t in tickers_tuple:
         try:
             df = yf.download(t, period="10y", progress=False)
             if not df.empty and 'Close' in df.columns:
@@ -66,6 +77,7 @@ def load_data():
                     data_dict["SPY_Low"] = df['Low'].iloc[:, 0] if isinstance(df['Low'], pd.DataFrame) else df['Low']
         except Exception: pass
     
+    # 強制抓取 SPX 盤中真實數據
     for _ in range(3):
         try:
             spx_df = yf.download("^GSPC", period="10y", progress=False)
@@ -80,7 +92,15 @@ def load_data():
     if data_dict: return pd.concat(data_dict, axis=1).dropna()
     return pd.DataFrame()
 
-df_all = load_data()
+# 將當前設定的 ETF 轉為 Tuple，再加上 SPY 當備用
+fetch_list = tuple(set(PORTFOLIO_ASSETS + ["SPY"]))
+df_all = load_data(fetch_list)
+
+# 確認是否抓到所有的資產，如果有缺則提醒
+missing_assets = [a for a in PORTFOLIO_ASSETS if a not in df_all.columns]
+if missing_assets:
+    st.error(f"⚠️ 無法下載以下標的資料，請檢查代碼是否正確：{', '.join(missing_assets)}")
+    st.stop()
 
 spx_col = '^GSPC' if '^GSPC' in df_all.columns else 'SPY'
 if spx_col == '^GSPC':
@@ -88,17 +108,14 @@ if spx_col == '^GSPC':
 else:
     h_col, l_col = 'SPY_High', 'SPY_Low'
 
-CHART_PRICE_COLS = [c for c in PRICE_COLS if c in df_all.columns]
-
 # ==========================================
-# 2. 控制面板與參數提取
+# 3. 滑桿參數提取
 # ==========================================
-st.sidebar.markdown("<h2 style='color:#38bdf8;'>動態參數調控</h2>", unsafe_allow_html=True)
-latest_qqq = float(df_all["QQQ"].iloc[-1]) if not df_all.empty else 717.54
-computed_ma200 = float(df_all["QQQ"].rolling(200).mean().iloc[-1]) if not df_all.empty else 612.72
+latest_core = float(df_all[tk_core].iloc[-1]) if not df_all.empty else 717.54
+computed_ma200 = float(df_all[tk_core].rolling(200).mean().iloc[-1]) if not df_all.empty else 612.72
 
-sim_qqq = st.sidebar.slider("QQQ 模擬/現價", 400.0, 900.0, latest_qqq, step=0.01)
-sim_ma200 = st.sidebar.slider("QQQ MA200 基準線", 400.0, 800.0, computed_ma200, step=0.01)
+sim_core = st.sidebar.slider(f"{tk_core} 模擬/現價", 100.0, 900.0, latest_core, step=0.01)
+sim_ma200 = st.sidebar.slider(f"{tk_core} MA200 基準線", 100.0, 800.0, computed_ma200, step=0.01)
 k_value = st.sidebar.slider("動態縮放 K 值", 0.500, 1.500, 1.137, step=0.001)
 threshold = st.sidebar.slider("最小換倉門檻 (%)", 0.5, 5.0, 2.0, step=0.1)
 
@@ -106,16 +123,16 @@ st.sidebar.markdown("<h3 style='color:#facc15;'>左側抄底門檻設定</h3>", 
 dip_lv1 = st.sidebar.slider("Lv1 抄底門檻 (%)", 10.0, 25.0, 19.0, step=0.1) 
 dip_lv2 = st.sidebar.slider("Lv2 恐慌門檻 (%)", 20.0, 40.0, 30.0, step=0.1) 
 
-bench_choice = st.sidebar.selectbox("對標基準", ["QQQ", "SPY"])
+bench_choice = st.sidebar.selectbox("對標基準", [tk_core, "SPY", "^GSPC"] if "^GSPC" in df_all.columns else [tk_core, "SPY"])
 window_choice = st.sidebar.selectbox("滾動週期", [21, 63, 126], index=0)
 
 dip_lv1_frac = dip_lv1 / 100.0
 dip_lv2_frac = dip_lv2 / 100.0
 
 # ==========================================
-# 3. 雙門檻 + 盤中觸價狀態機
+# 4. 雙門檻 + 盤中觸價狀態機
 # ==========================================
-df_all['MA200'] = df_all['QQQ'].rolling(200).mean()
+df_all['MA200'] = df_all[tk_core].rolling(200).mean()
 
 # 盤中真實高低點回撤
 df_all['SPX_Max'] = df_all[h_col].cummax()
@@ -125,7 +142,7 @@ regime_states = []
 current_state = 1 
 
 for i in range(len(df_all)):
-    q = df_all['QQQ'].iloc[i]
+    q = df_all[tk_core].iloc[i]
     ma = df_all['MA200'].iloc[i]
     spx_dd = df_all['SPX_DD'].iloc[i] 
     
@@ -146,28 +163,29 @@ for i in range(len(df_all)):
 
 df_all['Regime'] = regime_states
 
-# 權重生成矩陣 (套用 K 值縮放)
-mult_qqq_qld = k_value
-mult_tlt_gld = 1.0 + (k_value - 1) * 0.525
-mult_uup = 2.0 - k_value
+# 動態權重生成矩陣
+mult_core_lev = k_value
+mult_bond_gold = 1.0 + (k_value - 1) * 0.525
+mult_usd = 2.0 - k_value
 
-w_qqq_tgt = np.where(df_all['Regime'] == 0, BEAR_BASE["QQQ"], BULL_BASE["QQQ"] * mult_qqq_qld)
-w_tlt_tgt = np.where(df_all['Regime'] == 0, BEAR_BASE["TLT"], BULL_BASE["TLT"] * mult_tlt_gld)
-w_gld_tgt = np.where(df_all['Regime'] == 0, BEAR_BASE["GLD"], BULL_BASE["GLD"] * mult_tlt_gld)
-w_uup_tgt = np.where(df_all['Regime'] == 0, BEAR_BASE["UUP"], BULL_BASE["UUP"] * mult_uup)
+w_core_tgt = np.where(df_all['Regime'] == 0, BEAR_BASE[tk_core], BULL_BASE[tk_core] * mult_core_lev)
+w_bond_tgt = np.where(df_all['Regime'] == 0, BEAR_BASE[tk_bond], BULL_BASE[tk_bond] * mult_bond_gold)
+w_gold_tgt = np.where(df_all['Regime'] == 0, BEAR_BASE[tk_gold], BULL_BASE[tk_gold] * mult_bond_gold)
+w_usd_tgt = np.where(df_all['Regime'] == 0, BEAR_BASE[tk_usd], BULL_BASE[tk_usd] * mult_usd)
 
-# 精準執行破線減槓桿邏輯：當進入熊市冬眠期 (Regime 0)，QLD 依風控全數賣出歸零 (0.0)
-w_qld_tgt = np.where(df_all['Regime'] == 30, 25.0 * mult_qqq_qld,
-            np.where(df_all['Regime'] == 19, 15.0 * mult_qqq_qld,
-            np.where(df_all['Regime'] == 1, BULL_BASE["QLD"] * mult_qqq_qld, 0.0)))
+w_lev_tgt = np.where(df_all['Regime'] == 30, 25.0 * mult_core_lev,
+            np.where(df_all['Regime'] == 19, 15.0 * mult_core_lev,
+            np.where(df_all['Regime'] == 1, BULL_BASE[tk_lev] * mult_core_lev, 0.0)))
 
-# 剩餘部位自動流入流動性海綿池 SGOV (熊市時基礎 20% + 釋出的 20% QLD = 40%)
-w_sgov_tgt = np.maximum(0, 100.0 - (w_qqq_tgt + w_qld_tgt + w_tlt_tgt + w_gld_tgt + w_uup_tgt))
+w_safe_tgt = np.maximum(0, 100.0 - (w_core_tgt + w_lev_tgt + w_bond_tgt + w_gold_tgt + w_usd_tgt))
 
-tgt_weights_df = pd.DataFrame({
-    "QQQ": w_qqq_tgt, "QLD": w_qld_tgt, "TLT": w_tlt_tgt, 
-    "GLD": w_gld_tgt, "UUP": w_uup_tgt, "SGOV": w_sgov_tgt
-}, index=df_all.index) / 100.0
+tgt_weights_df = pd.DataFrame(index=df_all.index)
+tgt_weights_df[tk_core] = w_core_tgt / 100.0
+tgt_weights_df[tk_lev] = w_lev_tgt / 100.0
+tgt_weights_df[tk_bond] = w_bond_tgt / 100.0
+tgt_weights_df[tk_gold] = w_gold_tgt / 100.0
+tgt_weights_df[tk_usd] = w_usd_tgt / 100.0
+tgt_weights_df[tk_safe] = w_safe_tgt / 100.0
 
 targets = (tgt_weights_df.loc[df_all.index[-1]] * 100).to_dict()
 
@@ -178,22 +196,22 @@ last_state = df_all['Regime'].iloc[-2] if len(df_all) > 1 else 1
 if last_state == 1:
     if current_spx_dd <= -dip_lv2_frac: regime_text, r_class = f"極度恐慌抄底鎖定 (DD > {dip_lv2}%)", "dip-box"
     elif current_spx_dd <= -dip_lv1_frac: regime_text, r_class = f"左側抄底鎖定 (DD > {dip_lv1}%)", "dip-box"
-    elif sim_qqq < sim_ma200 * 0.97: regime_text, r_class = "熊市冬眠啟動 (跌破 0.97)", "bear-box"
+    elif sim_core < sim_ma200 * 0.97: regime_text, r_class = "熊市冬眠啟動 (跌破 0.97)", "bear-box"
     else: regime_text, r_class = "核心進攻模式", "bull-box"
 elif last_state == 0:
-    if sim_qqq >= sim_ma200 * 1.04: regime_text, r_class = "重返牛市 (強勢突破 1.04)", "bull-box"
+    if sim_core >= sim_ma200 * 1.04: regime_text, r_class = "重返牛市 (強勢突破 1.04)", "bull-box"
     elif current_spx_dd <= -dip_lv2_frac: regime_text, r_class = f"極度恐慌抄底鎖定 (DD > {dip_lv2}%)", "dip-box"
     elif current_spx_dd <= -dip_lv1_frac: regime_text, r_class = f"左側抄底鎖定 (DD > {dip_lv1}%)", "dip-box"
     else: regime_text, r_class = "熊市冬眠中 (等待突破 1.04)", "bear-box"
 else:
-    if sim_qqq >= sim_ma200 * 1.04: regime_text, r_class = "抄底成功！重返滿血牛市", "bull-box"
+    if sim_core >= sim_ma200 * 1.04: regime_text, r_class = "抄底成功！重返滿血牛市", "bull-box"
     elif current_spx_dd <= -dip_lv2_frac: regime_text, r_class = f"極度恐慌抄底鎖定 (DD > {dip_lv2}%)", "dip-box"
-    else: regime_text, r_class = "left-side抄底建倉鎖定中 (等待牛市訊號)", "dip-box"
+    else: regime_text, r_class = "左側抄底建倉鎖定中 (等待牛市訊號)", "dip-box"
 
-ratio = sim_qqq / sim_ma200 if sim_ma200 > 0 else 1.0
+ratio = sim_core / sim_ma200 if sim_ma200 > 0 else 1.0
 
 # ==========================================
-# 4. 前端總覽面板渲染
+# 5. 前端總覽面板渲染
 # ==========================================
 st.markdown("<h1 style='color:white; font-weight:bold;'>Pure Alpha 多資產對沖策略戰情室</h1>", unsafe_allow_html=True)
 col1, col2 = st.columns([1, 1])
@@ -203,8 +221,8 @@ with col1:
     html_card1 = f"""
     <div class="cyber-card">
         <h2>市場 Regime Engine ({spx_col} 聯動)</h2>
-        <div class="metric-row"><span class="m-label">QQQ 當前價格</span><span class="m-value c-yellow">{sim_qqq:.2f}</span></div>
-        <div class="metric-row"><span class="m-label">QQQ MA200 均線</span><span class="m-value">{sim_ma200:.2f}</span></div>
+        <div class="metric-row"><span class="m-label">{tk_core} 當前價格</span><span class="m-value c-yellow">{sim_core:.2f}</span></div>
+        <div class="metric-row"><span class="m-label">{tk_core} MA200 均線</span><span class="m-value">{sim_ma200:.2f}</span></div>
         <div class="metric-row"><span class="m-label">盤中真實最大回撤</span><span class="m-value c-yellow">{spx_dd_html}</span></div>
         <div class="metric-row"><span class="m-label">趨勢強弱比值 (Ratio)</span><span class="m-value c-green">{ratio:.3f}</span></div>
         <div class="regime-box {r_class}">{regime_text}</div>
@@ -213,11 +231,11 @@ with col1:
     st.markdown(html_card1.replace('\n', ''), unsafe_allow_html=True)
 
 with col2:
-    recent_ret = df_all[CHART_PRICE_COLS].pct_change().tail(window_choice).dropna()
-    w_array = np.array([targets[a] / 100 for a in ["QQQ", "QLD", "TLT", "GLD", "UUP", "SGOV"]])
-    cov_matrix = recent_ret[["QQQ", "QLD", "TLT", "GLD", "UUP", "SGOV"]].cov() * 252
+    recent_ret = df_all[PORTFOLIO_ASSETS].pct_change().tail(window_choice).dropna()
+    w_array = np.array([targets[a] / 100 for a in PORTFOLIO_ASSETS])
+    cov_matrix = recent_ret.cov() * 252
     p_vol = np.sqrt(np.dot(w_array.T, np.dot(cov_matrix, w_array)))
-    p_beta = (recent_ret[["QQQ", "QLD", "TLT", "GLD", "UUP", "SGOV"]].dot(w_array).cov(recent_ret[bench_choice]) * 252) / (recent_ret[bench_choice].var() * 252)
+    p_beta = (recent_ret.dot(w_array).cov(df_all[bench_choice].pct_change().tail(window_choice).dropna()) * 252) / (df_all[bench_choice].pct_change().tail(window_choice).dropna().var() * 252)
     risk_status = '<span class="c-green">進攻效能優異 (RISK ON)</span>' if p_beta > 0.7 else '<span class="c-red">避險防禦狀態 (RISK OFF)</span>'
     html_card2 = f"""
     <div class="cyber-card">
@@ -232,18 +250,18 @@ with col2:
 
 table_rows = ""
 is_bull_now = df_all['Regime'].iloc[-1] in [1, 19, 30]
-for asset in ["QQQ", "QLD", "TLT", "GLD", "UUP", "SGOV"]:
-    cur, tgt = CURRENT_WEIGHTS[asset], targets[asset]
+for asset in PORTFOLIO_ASSETS:
+    cur, tgt = CURRENT_WEIGHTS.get(asset, 0), targets[asset]
     diff = tgt - cur
     action, act_class = "HOLD", "badge-hold"
     if diff >= threshold: action, act_class = "BUY", "badge-buy"
     elif diff <= -threshold: action, act_class = "SELL", "badge-sell"
-    if not is_bull_now and asset == "QLD" and cur > tgt: action, act_class = "REDUCE", "badge-critical"
+    if not is_bull_now and asset == tk_lev and cur > tgt: action, act_class = "REDUCE", "badge-critical"
     
     vol_str = f"{recent_ret[asset].std() * np.sqrt(252) * 100:.1f}%"
-    corr = recent_ret[asset].corr(recent_ret[bench_choice])
-    beta_str = f"{recent_ret[asset].cov(recent_ret[bench_choice]) / recent_ret[bench_choice].var():.2f}"
-    bg_color = "background: rgba(56, 189, 248, 0.05);" if asset == "SGOV" else ""
+    corr = recent_ret[asset].corr(df_all[bench_choice].pct_change().tail(window_choice).dropna())
+    beta_str = f"{recent_ret[asset].cov(df_all[bench_choice].pct_change().tail(window_choice).dropna()) / df_all[bench_choice].pct_change().tail(window_choice).dropna().var():.2f}"
+    bg_color = "background: rgba(56, 189, 248, 0.05);" if asset == tk_safe else ""
     table_rows += f'<tr style="{bg_color}"><td style="text-align:left; padding-left:15px;"><b>{asset}</b> <span style="color:#64748b; font-size:13px;">{ASSET_ROLES[asset]}</span></td><td style="font-family:monospace;">{cur:.2f}%</td><td style="font-family:monospace; font-weight:bold; color:white;">{tgt:.2f}%</td><td style="font-family:monospace; color:{"#22c55e" if diff>=0 else "#ef4444"};">{diff:+.2f}%</td><td style="font-family:monospace; color:#38bdf8;">{vol_str}</td><td style="font-family:monospace; color:{"#22c55e" if corr>0.4 else "#ef4444" if corr<-0.1 else "#facc15"};">{corr:.2f}</td><td style="font-family:monospace;">{beta_str}</td><td><span class="badge-action {act_class}">{action}</span></td></tr>'
 
 st.markdown(f"""
@@ -253,30 +271,30 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 5. 視覺化圖表區塊 
+# 6. 視覺化圖表區塊 
 # ==========================================
 col_pie, col_beta = st.columns([1, 2.2])
 
 with col_pie:
     st.markdown("<h2 style='color: #38bdf8; font-size: 18px; border-left: 4px solid #38bdf8; padding-left: 10px; margin-bottom: 10px;'>目前實倉資產配比</h2>", unsafe_allow_html=True)
-    fig_pie = go.Figure(data=[go.Pie(labels=list(CURRENT_WEIGHTS.keys()), values=list(CURRENT_WEIGHTS.values()), hole=.45, textinfo='label+percent', marker=dict(colors=[CHART_COLORS[l] for l in CURRENT_WEIGHTS.keys()], line=dict(color='#081028', width=2)))])
+    fig_pie = go.Figure(data=[go.Pie(labels=PORTFOLIO_ASSETS, values=[CURRENT_WEIGHTS.get(a,0) for a in PORTFOLIO_ASSETS], hole=.45, textinfo='label+percent', marker=dict(colors=[CHART_COLORS.get(l, "#94a3b8") for l in PORTFOLIO_ASSETS], line=dict(color='#081028', width=2)))])
     fig_pie.update_layout(template='plotly_dark', paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', margin=dict(l=20, r=20, t=10, b=20), height=320, showlegend=False)
     st.plotly_chart(fig_pie, use_container_width=True)
 
 with col_beta:
     st.markdown(f"<h2 style='color: #38bdf8; font-size: 18px; border-left: 4px solid #38bdf8; padding-left: 10px; margin-bottom: 10px;'>動態 Beta 趨勢 (即時還原真實歷史軌跡)</h2>", unsafe_allow_html=True)
     
-    ret_all = df_all[CHART_PRICE_COLS].pct_change().dropna()
-    roll_cov = ret_all.rolling(window=window_choice).cov(ret_all[bench_choice])
+    ret_all = df_all[PORTFOLIO_ASSETS + [bench_choice]].pct_change().dropna()
+    roll_cov = ret_all[PORTFOLIO_ASSETS].rolling(window=window_choice).cov(ret_all[bench_choice])
     roll_var = ret_all[bench_choice].rolling(window=window_choice).var()
     roll_beta = roll_cov.div(roll_var, axis=0).dropna().tail(504)
     
     fig_beta = go.Figure()
-    for asset in ["QQQ", "QLD", "TLT", "GLD", "UUP", "SGOV"]:
-        fig_beta.add_trace(go.Scatter(x=roll_beta.index, y=roll_beta[asset], mode='lines', name=asset, line=dict(color=CHART_COLORS[asset], width=1.5, dash='dot')))
+    for asset in PORTFOLIO_ASSETS:
+        fig_beta.add_trace(go.Scatter(x=roll_beta.index, y=roll_beta[asset], mode='lines', name=asset, line=dict(color=CHART_COLORS.get(asset, "#94a3b8"), width=1.5, dash='dot')))
     
     w_hist_aligned = tgt_weights_df.loc[roll_beta.index]
-    port_beta_dynamic = (roll_beta[["QQQ", "QLD", "TLT", "GLD", "UUP", "SGOV"]] * w_hist_aligned).sum(axis=1)
+    port_beta_dynamic = (roll_beta[PORTFOLIO_ASSETS] * w_hist_aligned).sum(axis=1)
     
     fig_beta.add_trace(go.Scatter(x=port_beta_dynamic.index, y=port_beta_dynamic, mode='lines', name='策略組合 (Dynamic Portfolio)', line=dict(color='#22c55e', width=3.5)))
     fig_beta.update_layout(template='plotly_dark', paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', margin=dict(l=10, r=20, t=10, b=10), height=320, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
@@ -285,7 +303,7 @@ with col_beta:
 st.markdown("---")
 
 # ==========================================
-# 6. 高級路徑依賴回測引擎與深度報告
+# 7. 高級路徑依賴回測引擎與深度報告
 # ==========================================
 st.markdown("<h2 style='color: #38bdf8; font-size: 22px; border-left: 5px solid #38bdf8; padding-left: 10px; margin-bottom: 20px;'>歷史回測與分析引擎 (Path-Dependent Rebalance)</h2>", unsafe_allow_html=True)
 
@@ -298,14 +316,14 @@ bt_mask = (df_all.index.date >= start_date) & (df_all.index.date <= end_date)
 bt_df = df_all.loc[bt_mask]
 
 if len(bt_df) > 10:
-    bt_ret = bt_df[CHART_PRICE_COLS].pct_change().dropna()
+    bt_ret = bt_df[PORTFOLIO_ASSETS + [bench_choice]].pct_change().dropna()
     tgt_weights_sub = tgt_weights_df.loc[bt_ret.index]
     
     n_days = len(bt_ret)
     port_nav = np.zeros(n_days)
     
-    ret_array = bt_ret[["QQQ", "QLD", "TLT", "GLD", "UUP", "SGOV"]].values
-    tgt_array = tgt_weights_sub[["QQQ", "QLD", "TLT", "GLD", "UUP", "SGOV"]].values
+    ret_array = bt_ret[PORTFOLIO_ASSETS].values
+    tgt_array = tgt_weights_sub[PORTFOLIO_ASSETS].values
     
     current_w = tgt_array[0].copy()
     threshold_frac = threshold / 100.0
@@ -369,11 +387,11 @@ if len(bt_df) > 10:
     if total_ret < bench_total_ret and bt_beta >= 0.95:
         beta_diag = f"""
         <li><span style="color:#ef4444;"><b>Beta 偽裝與稀釋效應 (Dilution Effect)：</b></span><br>
-        本區間組合 Beta 高達 <b>{bt_beta:.2f}</b> 但總報酬卻落後基準。此現象主因為策略配置了 TLT (美債)、GLD (黃金) 或 SGOV (現金) 等避險資產。在強勢單邊牛市中，這些非核心部位產生了<b>「現金拖累 (Cash Drag)」</b>，吃掉了 QLD 槓桿帶來的超額報酬。這證明此階段市場為單邊極端行情，多元資產配置的防禦特性反而成為績效阻力。</li>"""
+        本區間組合 Beta 高達 <b>{bt_beta:.2f}</b> 但總報酬卻落後基準。此現象主因為策略配置了 {tk_bond} (長債)、{tk_gold} (抗通膨) 或 {tk_safe} (流動性) 等防禦資產。在強勢單邊牛市中，這些非核心部位產生了<b>「現金拖累 (Cash Drag)」</b>，吃掉了 {tk_lev} 槓桿帶來的超額報酬。這證明此階段為單邊極端行情，多元配置的防禦特性反成阻力。</li>"""
     elif total_ret > bench_total_ret and bt_beta < 1.0:
         beta_diag = f"""
         <li><span style="color:#22c55e;"><b>優異的風險調整後報酬 (Alpha Generation)：</b></span><br>
-        本區間組合 Beta 僅 <b>{bt_beta:.2f}</b>，卻成功擊敗基準大盤！這顯示策略的「雙門檻防禦」與「左側抄底機制」在震盪或熊市期間成功發揮作用。透過在底部擴大 QLD 槓桿，並在高波動時躲入 SGOV/TLT，策略成功實現了<b>「低風險、高超額」</b>的非對稱打擊。</li>"""
+        本區間組合 Beta 僅 <b>{bt_beta:.2f}</b>，卻成功擊敗基準大盤！這顯示策略的「雙門檻防禦」與「左側抄底機制」在震盪或熊市期間成功發揮作用。透過在底部擴大 {tk_lev} 槓桿，並在高波動時躲入 {tk_safe}/{tk_bond}，策略實現了<b>「低風險、高超額」</b>的非對稱打擊。</li>"""
     else:
         beta_diag = f"""
         <li><b>Beta 與報酬一致性：</b><br>
@@ -382,11 +400,11 @@ if len(bt_df) > 10:
     if mdd > bench_mdd * 0.7:
         mdd_diag = f"""
         <li><span style="color:#38bdf8;"><b>卓越下檔防護 (Drawdown Control)：</b></span><br>
-        策略成功將最大回撤鎖定在 <b>{mdd*100:.2f}%</b> (基準為 {bench_mdd*100:.2f}%)。這歸功於「跌破 0.97 MA200 切換熊市」的果斷機制，成功避開了主跌段的系統性崩潰。</li>"""
+        策略成功將最大回撤鎖定在 <b>{mdd*100:.2f}%</b> (基準為 {bench_mdd*100:.2f}%)。這歸功於「跌破 0.97 MA200 切換熊市」的機制，果斷將高風險標的切換至 {tk_safe}。</li>"""
     else:
          mdd_diag = f"""
         <li><b>回撤壓力測試 (Drawdown Exposure)：</b><br>
-        區間最大回撤為 <b>{mdd*100:.2f}%</b>。若此回撤發生在左側抄底階段 (Regime 19/30)，則為預期中的「建倉期浮虧」，系統正透過 QLD 吸收底部籌碼。</li>"""
+        區間最大回撤為 <b>{mdd*100:.2f}%</b>。若此回撤發生在左側抄底階段 (Regime 19/30)，則為預期的「建倉期浮虧」，系統正透過 {tk_lev} 吸收籌碼。</li>"""
 
     report_html = f"""
     <div style="background: rgba(23, 35, 58, 0.7); padding: 20px; border-radius: 12px; margin-top: 25px; border-left: 5px solid #38bdf8; box-shadow: 0 4px 15px rgba(0,0,0,0.2);">
@@ -397,7 +415,7 @@ if len(bt_df) > 10:
             <p style="margin-bottom: 5px;"><b>📌 系統動力學診斷：</b></p>
             <ul style="margin-top: 0; margin-bottom: 15px;">
                 <li><b>再平衡成本損耗 (Rebalance Friction)：</b><br>
-                在 <b>{threshold:.1f}%</b> 的容忍門檻下，觸發真實調倉 <b>{rebalance_count}</b> 次 (平均每 {avg_reb_days} 天一次)。若換倉次數過於頻繁，可能導致過高的滑價與手續費摩擦。</li>
+                在 <b>{threshold:.1f}%</b> 的容忍門檻下，觸發真實調倉 <b>{rebalance_count}</b> 次 (平均每 {avg_reb_days} 天一次)。</li>
                 {beta_diag}
                 {rebalance_count == 0 and "" or mdd_diag}
             </ul>
@@ -409,13 +427,13 @@ else:
     st.warning("資料不足。")
 
 # ==========================================
-# 7. 除錯透視鏡 (隱藏面板)
+# 8. 除錯透視鏡 (隱藏面板)
 # ==========================================
 with st.expander("🔍 歷史回撤與觸發除錯檢視 (Data Inspector)"):
     st.markdown("在此確認 Yahoo Finance 計算的回撤是否與你的 Excel 有微小落差。")
-    debug_df = df_all[['QQQ', 'MA200', spx_col, h_col, l_col, 'SPX_DD', 'Regime']].tail(100).copy()
+    debug_df = df_all[[tk_core, 'MA200', spx_col, h_col, l_col, 'SPX_DD', 'Regime']].tail(100).copy()
     debug_df['SPX_DD'] = (debug_df['SPX_DD'] * 100).round(2).astype(str) + '%'
     st.dataframe(debug_df.sort_index(ascending=False))
 
 # 標示版本號 (放置於頁尾)
-st.markdown('<div class="version-footer">Powered by Pure Alpha Quantitative Engine | Version 8.8 (Intraday & Beta Build)</div>', unsafe_allow_html=True)
+st.markdown('<div class="version-footer">Powered by Pure Alpha Quantitative Engine | Version 8.8 (Dynamic Tickers & Beta Build)</div>', unsafe_allow_html=True)
