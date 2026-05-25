@@ -142,7 +142,8 @@ dip_lv2 = st.sidebar.slider("Lv2 恐慌門檻 (%)", 20.0, 40.0, 30.0, step=0.1)
 
 bench_options = [tk_core, "SPY"]
 if "^GSPC" in df_all.columns: bench_options.append("^GSPC")
-bench_choice = st.sidebar.selectbox("對標基準", bench_options, index=1 if "SPY" in bench_options else 0)
+# 預設對標基準改為 QQQ (index=0)
+bench_choice = st.sidebar.selectbox("對標基準", bench_options, index=0)
 
 window_choice = st.sidebar.selectbox("滾動週期", [21, 63, 126], index=0)
 
@@ -204,6 +205,7 @@ tgt_weights_df[tk_safe] = np.maximum(0, 1.0 - tgt_weights_df[[tk_core, tk_lev, t
 
 targets = (tgt_weights_df.loc[df_all.index[-1]] * 100).to_dict()
 
+# UI 盤中狀態判定
 current_spx_dd = df_all['SPX_DD'].iloc[-1]
 last_state = df_all['Regime'].iloc[-2] if len(df_all) > 1 else 1
 
@@ -253,9 +255,12 @@ with col2:
         
         bench_ret = df_all[bench_choice].pct_change().tail(window_choice).dropna()
         if not recent_ret.empty and not bench_ret.empty and len(recent_ret) == len(bench_ret):
-            p_beta_val = (recent_ret.dot(w_array).cov(bench_ret) * 252) / (bench_ret.var() * 252)
-            # 強制轉型，避免 NumPy Array 導致的錯誤
-            p_beta = float(p_beta_val.iloc[0]) if isinstance(p_beta_val, pd.Series) else float(p_beta_val)
+            # 極致穩定 Beta 計算方式
+            p_ret_series = recent_ret.dot(w_array).values
+            b_ret_series = bench_ret.values
+            cov_val = np.cov(p_ret_series, b_ret_series)[0, 1]
+            var_val = np.var(b_ret_series, ddof=1)
+            p_beta = (cov_val * 252) / (var_val * 252) if var_val > 0 else 0.0
         else:
             p_beta = 0.0
             
@@ -288,11 +293,16 @@ for asset in AVAILABLE_ASSETS:
     vol_str = f"{recent_ret[asset].std() * np.sqrt(252) * 100:.1f}%" if 'recent_ret' in locals() and asset in recent_ret else "0.0%"
     
     if 'recent_ret' in locals() and asset in recent_ret and 'bench_ret' in locals() and not bench_ret.empty:
-        corr_val = recent_ret[asset].corr(bench_ret)
-        corr = float(corr_val.iloc[0]) if isinstance(corr_val, pd.Series) else float(corr_val)
-        
-        beta_val = recent_ret[asset].cov(bench_ret) / bench_ret.var()
-        beta_str = f"{float(beta_val.iloc[0]) if isinstance(beta_val, pd.Series) else float(beta_val):.2f}"
+        a_ret = recent_ret[asset].values
+        b_ret = bench_ret.values
+        if len(a_ret) == len(b_ret) and len(a_ret) > 1:
+            corr = np.corrcoef(a_ret, b_ret)[0, 1]
+            cov_val = np.cov(a_ret, b_ret)[0, 1]
+            var_val = np.var(b_ret, ddof=1)
+            beta_val = cov_val / var_val if var_val > 0 else 0.0
+            beta_str = f"{beta_val:.2f}"
+        else:
+             corr, beta_str = 0.0, "0.00"
     else:
         corr, beta_str = 0.0, "0.00"
         
@@ -414,12 +424,15 @@ if len(bt_df) > 10 and len(valid_assets) > 0 and bench_choice in bt_df.columns:
     sharpe = (cagr - 0.04) / bt_vol if bt_vol > 0 else 0
     bench_sharpe = (bench_cagr - 0.04) / bench_vol if bench_vol > 0 else 0
     
-    bt_cov = port_daily_ret_series.cov(bt_ret[bench_choice])
-    bt_var = bt_ret[bench_choice].var()
-    bt_beta_val = bt_cov / bt_var if bt_var > 0 else 0
-    
-    # 強制轉型為純量 float，徹底消除 Numpy Array 與 float 的比較錯誤
-    bt_beta = float(bt_beta_val.iloc[0]) if isinstance(bt_beta_val, pd.Series) else float(bt_beta_val)
+    # 使用 Numpy 計算，確保無論何種狀況都是 float
+    p_series = port_daily_ret_series.values
+    b_series = bt_ret[bench_choice].values
+    if len(p_series) == len(b_series) and len(p_series) > 1:
+        cov_val = np.cov(p_series, b_series)[0, 1]
+        var_val = np.var(b_series, ddof=1)
+        bt_beta = cov_val / var_val if var_val > 0 else 0.0
+    else:
+        bt_beta = 0.0
     
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=cum_port.index, y=cum_port.values, mode='lines', name='Pure Alpha (策略組合)', line=dict(color='#38bdf8', width=2)))
@@ -440,7 +453,6 @@ if len(bt_df) > 10 and len(valid_assets) > 0 and bench_choice in bt_df.columns:
     bear_days = np.sum(df_all.loc[bt_mask, 'Regime'] == 0)
     avg_reb_days = total_days // max(1, rebalance_count)
     
-    # 策略歸因判斷邏輯
     if total_ret < bench_total_ret and bt_beta >= 0.95:
         beta_diag = f"""
         <li><span style="color:#ef4444;"><b>Beta 偽裝與稀釋效應 (Dilution Effect)：</b></span><br>
@@ -496,4 +508,4 @@ with st.expander("🔍 歷史回撤與觸發除錯檢視 (Data Inspector)"):
         st.write("資料不齊全，無法顯示除錯表。")
 
 # 標示版本號 (放置於頁尾)
-st.markdown('<div class="version-footer">Powered by Pure Alpha Quantitative Engine | Version 8.8.6 (Beta Type Robust Build)</div>', unsafe_allow_html=True)
+st.markdown('<div class="version-footer">Powered by Pure Alpha Quantitative Engine | Version 8.8.7 (Beta Robust Build)</div>', unsafe_allow_html=True)
