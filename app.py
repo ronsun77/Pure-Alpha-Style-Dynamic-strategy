@@ -41,19 +41,21 @@ custom_css = """
 st.markdown(custom_css, unsafe_allow_html=True)
 
 # ==========================================
-# 1. 核心參數與資料下載 (加入 High/Low 提取)
+# 1. 核心參數與資料下載 (高低點與指數融合)
 # ==========================================
 PRICE_COLS = ["QQQ", "QLD", "TLT", "GLD", "UUP", "SGOV", "SPY"]
 CURRENT_WEIGHTS = {"QQQ": 28.71, "QLD": 35.66, "TLT": 7.80, "GLD": 7.65, "UUP": 8.00, "SGOV": 12.18}
 BULL_BASE = {"QQQ": 26.0, "QLD": 32.0, "TLT": 7.0, "GLD": 7.0, "UUP": 9.0}
-BEAR_BASE = {"QQQ": 13.8, "QLD": 0.0, "TLT": 9.9, "GLD": 10.1, "UUP": 24.5}
+
+# 修正：完美還原 Excel 表格的 Bear Base 原始矩陣
+BEAR_BASE = {"QQQ": 20.0, "QLD": 20.0, "TLT": 10.0, "GLD": 10.0, "UUP": 20.0}
+
 ASSET_ROLES = {"QQQ": "核心成長引擎", "QLD": "動能槓桿放大", "TLT": "長債負相關避險", "GLD": "抗通膨終極防禦", "UUP": "美元流動性避險", "SGOV": "流動性海綿池"}
 CHART_COLORS = {"QQQ": "#38bdf8", "QLD": "#818cf8", "TLT": "#f472b6", "GLD": "#facc15", "UUP": "#ef4444", "SGOV": "#94a3b8"}
 
 @st.cache_data(ttl=3600)
 def load_data():
     data_dict = {}
-    # 1. 抓取一般 ETF
     for t in PRICE_COLS:
         try:
             df = yf.download(t, period="10y", progress=False)
@@ -64,7 +66,6 @@ def load_data():
                     data_dict["SPY_Low"] = df['Low'].iloc[:, 0] if isinstance(df['Low'], pd.DataFrame) else df['Low']
         except Exception: pass
     
-    # 2. 強制抓取 SPX (包含 High/Low)
     for _ in range(3):
         try:
             spx_df = yf.download("^GSPC", period="10y", progress=False)
@@ -116,7 +117,7 @@ dip_lv2_frac = dip_lv2 / 100.0
 # ==========================================
 df_all['MA200'] = df_all['QQQ'].rolling(200).mean()
 
-# 盤中真實回撤
+# 盤中真實高低點回撤
 df_all['SPX_Max'] = df_all[h_col].cummax()
 df_all['SPX_DD'] = df_all[l_col] / df_all['SPX_Max'] - 1
 
@@ -145,7 +146,7 @@ for i in range(len(df_all)):
 
 df_all['Regime'] = regime_states
 
-# 權重生成矩陣
+# 權重生成矩陣 (套用 K 值縮放)
 mult_qqq_qld = k_value
 mult_tlt_gld = 1.0 + (k_value - 1) * 0.525
 mult_uup = 2.0 - k_value
@@ -155,10 +156,12 @@ w_tlt_tgt = np.where(df_all['Regime'] == 0, BEAR_BASE["TLT"], BULL_BASE["TLT"] *
 w_gld_tgt = np.where(df_all['Regime'] == 0, BEAR_BASE["GLD"], BULL_BASE["GLD"] * mult_tlt_gld)
 w_uup_tgt = np.where(df_all['Regime'] == 0, BEAR_BASE["UUP"], BULL_BASE["UUP"] * mult_uup)
 
+# 精準執行破線減槓桿邏輯：當進入熊市冬眠期 (Regime 0)，QLD 依風控全數賣出歸零 (0.0)
 w_qld_tgt = np.where(df_all['Regime'] == 30, 25.0 * mult_qqq_qld,
             np.where(df_all['Regime'] == 19, 15.0 * mult_qqq_qld,
-            np.where(df_all['Regime'] == 1, BULL_BASE["QLD"] * mult_qqq_qld, BEAR_BASE["QLD"])))
+            np.where(df_all['Regime'] == 1, BULL_BASE["QLD"] * mult_qqq_qld, 0.0)))
 
+# 剩餘部位自動流入流動性海綿池 SGOV (熊市時基礎 20% + 釋出的 20% QLD = 40%)
 w_sgov_tgt = np.maximum(0, 100.0 - (w_qqq_tgt + w_qld_tgt + w_tlt_tgt + w_gld_tgt + w_uup_tgt))
 
 tgt_weights_df = pd.DataFrame({
@@ -185,14 +188,13 @@ elif last_state == 0:
 else:
     if sim_qqq >= sim_ma200 * 1.04: regime_text, r_class = "抄底成功！重返滿血牛市", "bull-box"
     elif current_spx_dd <= -dip_lv2_frac: regime_text, r_class = f"極度恐慌抄底鎖定 (DD > {dip_lv2}%)", "dip-box"
-    else: regime_text, r_class = "左側抄底建倉鎖定中 (等待牛市訊號)", "dip-box"
+    else: regime_text, r_class = "left-side抄底建倉鎖定中 (等待牛市訊號)", "dip-box"
 
 ratio = sim_qqq / sim_ma200 if sim_ma200 > 0 else 1.0
 
 # ==========================================
 # 4. 前端總覽面板渲染
 # ==========================================
-# 更改為新的、更大氣的標題
 st.markdown("<h1 style='color:white; font-weight:bold;'>Pure Alpha 多資產對沖策略戰情室</h1>", unsafe_allow_html=True)
 col1, col2 = st.columns([1, 1])
 
@@ -283,7 +285,7 @@ with col_beta:
 st.markdown("---")
 
 # ==========================================
-# 6. 高級路徑依賴回測引擎 
+# 6. 高級路徑依賴回測引擎與深度報告
 # ==========================================
 st.markdown("<h2 style='color: #38bdf8; font-size: 22px; border-left: 5px solid #38bdf8; padding-left: 10px; margin-bottom: 20px;'>歷史回測與分析引擎 (Path-Dependent Rebalance)</h2>", unsafe_allow_html=True)
 
@@ -397,7 +399,7 @@ if len(bt_df) > 10:
                 <li><b>再平衡成本損耗 (Rebalance Friction)：</b><br>
                 在 <b>{threshold:.1f}%</b> 的容忍門檻下，觸發真實調倉 <b>{rebalance_count}</b> 次 (平均每 {avg_reb_days} 天一次)。若換倉次數過於頻繁，可能導致過高的滑價與手續費摩擦。</li>
                 {beta_diag}
-                {mdd_diag}
+                {rebalance_count == 0 and "" or mdd_diag}
             </ul>
         </div>
     </div>
