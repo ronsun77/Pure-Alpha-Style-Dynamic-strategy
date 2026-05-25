@@ -4,6 +4,7 @@ import numpy as np
 import yfinance as yf
 import plotly.graph_objects as go
 import time
+from datetime import datetime, timedelta
 
 # ==========================================
 # 0. 網頁基礎設定與終極 CSS
@@ -158,7 +159,6 @@ df_all['SPX_DD'] = df_all[l_col] / df_all['SPX_Max'] - 1
 regime_states = []
 current_state = 1 
 
-# 加速狀態機計算
 qqq_vals = df_all[tk_core].values
 ma200_vals = df_all['MA200'].values
 spx_dd_vals = df_all['SPX_DD'].values
@@ -185,31 +185,25 @@ for i in range(len(df_all)):
 
 df_all['Regime'] = regime_states
 
-# 權重生成 (完全基於 DataFrame 的 Series 運算，保證長度絕對對齊)
 mult_core_lev = k_value
 mult_bond_gold = 1.0 + (k_value - 1) * 0.525
 mult_usd = 2.0 - k_value
 
 tgt_weights_df = pd.DataFrame(index=df_all.index)
-
-# 核心資產
 tgt_weights_df[tk_core] = np.where(df_all['Regime'] == 0, BEAR_BASE[tk_core]/100.0, (BULL_BASE[tk_core]/100.0) * mult_core_lev)
 tgt_weights_df[tk_bond] = np.where(df_all['Regime'] == 0, BEAR_BASE[tk_bond]/100.0, (BULL_BASE[tk_bond]/100.0) * mult_bond_gold)
 tgt_weights_df[tk_gold] = np.where(df_all['Regime'] == 0, BEAR_BASE[tk_gold]/100.0, (BULL_BASE[tk_gold]/100.0) * mult_bond_gold)
 tgt_weights_df[tk_usd]  = np.where(df_all['Regime'] == 0, BEAR_BASE[tk_usd]/100.0,  (BULL_BASE[tk_usd]/100.0) * mult_usd)
 
-# 槓桿部位 (使用 Pandas 原生的 case/when 邏輯，避免 numpy 造成的長度問題)
 tgt_weights_df[tk_lev] = 0.0
 tgt_weights_df.loc[df_all['Regime'] == 1,  tk_lev] = (BULL_BASE[tk_lev]/100.0) * mult_core_lev
 tgt_weights_df.loc[df_all['Regime'] == 19, tk_lev] = 0.15 * mult_core_lev
 tgt_weights_df.loc[df_all['Regime'] == 30, tk_lev] = 0.25 * mult_core_lev
 
-# 流動性海綿池
 tgt_weights_df[tk_safe] = np.maximum(0, 1.0 - tgt_weights_df[[tk_core, tk_lev, tk_bond, tk_gold, tk_usd]].sum(axis=1))
 
 targets = (tgt_weights_df.loc[df_all.index[-1]] * 100).to_dict()
 
-# UI 盤中狀態判定
 current_spx_dd = df_all['SPX_DD'].iloc[-1]
 last_state = df_all['Regime'].iloc[-2] if len(df_all) > 1 else 1
 
@@ -259,9 +253,11 @@ with col2:
         
         bench_ret = df_all[bench_choice].pct_change().tail(window_choice).dropna()
         if not recent_ret.empty and not bench_ret.empty and len(recent_ret) == len(bench_ret):
-            p_beta = (recent_ret.dot(w_array).cov(bench_ret) * 252) / (bench_ret.var() * 252)
+            p_beta_val = (recent_ret.dot(w_array).cov(bench_ret) * 252) / (bench_ret.var() * 252)
+            # 強制轉型，避免 NumPy Array 導致的錯誤
+            p_beta = float(p_beta_val.iloc[0]) if isinstance(p_beta_val, pd.Series) else float(p_beta_val)
         else:
-            p_beta = 0
+            p_beta = 0.0
             
         risk_status = '<span class="c-green">進攻效能優異 (RISK ON)</span>' if p_beta > 0.7 else '<span class="c-red">避險防禦狀態 (RISK OFF)</span>'
     else:
@@ -292,10 +288,13 @@ for asset in AVAILABLE_ASSETS:
     vol_str = f"{recent_ret[asset].std() * np.sqrt(252) * 100:.1f}%" if 'recent_ret' in locals() and asset in recent_ret else "0.0%"
     
     if 'recent_ret' in locals() and asset in recent_ret and 'bench_ret' in locals() and not bench_ret.empty:
-        corr = recent_ret[asset].corr(bench_ret)
-        beta_str = f"{recent_ret[asset].cov(bench_ret) / bench_ret.var():.2f}"
+        corr_val = recent_ret[asset].corr(bench_ret)
+        corr = float(corr_val.iloc[0]) if isinstance(corr_val, pd.Series) else float(corr_val)
+        
+        beta_val = recent_ret[asset].cov(bench_ret) / bench_ret.var()
+        beta_str = f"{float(beta_val.iloc[0]) if isinstance(beta_val, pd.Series) else float(beta_val):.2f}"
     else:
-        corr, beta_str = 0.0, "0.0"
+        corr, beta_str = 0.0, "0.00"
         
     bg_color = "background: rgba(56, 189, 248, 0.05);" if asset == tk_safe else ""
     table_rows += f'<tr style="{bg_color}"><td style="text-align:left; padding-left:15px;"><b>{asset}</b> <span style="color:#64748b; font-size:13px;">{ASSET_ROLES.get(asset,"")}</span></td><td style="font-family:monospace;">{cur:.2f}%</td><td style="font-family:monospace; font-weight:bold; color:white;">{tgt:.2f}%</td><td style="font-family:monospace; color:{"#22c55e" if diff>=0 else "#ef4444"};">{diff:+.2f}%</td><td style="font-family:monospace; color:#38bdf8;">{vol_str}</td><td style="font-family:monospace; color:{"#22c55e" if corr>0.4 else "#ef4444" if corr<-0.1 else "#facc15"};">{corr:.2f}</td><td style="font-family:monospace;">{beta_str}</td><td><span class="badge-action {act_class}">{action}</span></td></tr>'
@@ -417,7 +416,10 @@ if len(bt_df) > 10 and len(valid_assets) > 0 and bench_choice in bt_df.columns:
     
     bt_cov = port_daily_ret_series.cov(bt_ret[bench_choice])
     bt_var = bt_ret[bench_choice].var()
-    bt_beta = bt_cov / bt_var if bt_var > 0 else 0
+    bt_beta_val = bt_cov / bt_var if bt_var > 0 else 0
+    
+    # 強制轉型為純量 float，徹底消除 Numpy Array 與 float 的比較錯誤
+    bt_beta = float(bt_beta_val.iloc[0]) if isinstance(bt_beta_val, pd.Series) else float(bt_beta_val)
     
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=cum_port.index, y=cum_port.values, mode='lines', name='Pure Alpha (策略組合)', line=dict(color='#38bdf8', width=2)))
@@ -438,6 +440,7 @@ if len(bt_df) > 10 and len(valid_assets) > 0 and bench_choice in bt_df.columns:
     bear_days = np.sum(df_all.loc[bt_mask, 'Regime'] == 0)
     avg_reb_days = total_days // max(1, rebalance_count)
     
+    # 策略歸因判斷邏輯
     if total_ret < bench_total_ret and bt_beta >= 0.95:
         beta_diag = f"""
         <li><span style="color:#ef4444;"><b>Beta 偽裝與稀釋效應 (Dilution Effect)：</b></span><br>
@@ -493,4 +496,4 @@ with st.expander("🔍 歷史回撤與觸發除錯檢視 (Data Inspector)"):
         st.write("資料不齊全，無法顯示除錯表。")
 
 # 標示版本號 (放置於頁尾)
-st.markdown('<div class="version-footer">Powered by Pure Alpha Quantitative Engine | Version 8.8.5 (Pandas Alignment Build)</div>', unsafe_allow_html=True)
+st.markdown('<div class="version-footer">Powered by Pure Alpha Quantitative Engine | Version 8.8.6 (Beta Type Robust Build)</div>', unsafe_allow_html=True)
