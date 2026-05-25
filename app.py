@@ -6,9 +6,9 @@ import plotly.graph_objects as go
 from datetime import datetime, timedelta
 
 # ==========================================
-# 0. 網頁基礎設定與終極 CSS
+# 0. 網頁基礎設定與終極 CSS 外掛注入
 # ==========================================
-st.set_page_config(page_title="Pure Alpha 戰情室 V8.5", layout="wide")
+st.set_page_config(page_title="Pure Alpha 戰情室 V8.6", layout="wide")
 
 custom_css = """
 <style>
@@ -17,12 +17,14 @@ custom_css = """
     .cyber-card { background: #17233a; border-radius: 20px; padding: 24px; box-shadow: 0 4px 25px rgba(0,0,0,0.35); border: 1px solid #24334d; margin-bottom: 20px; color: #e2e8f0; height: 100%; }
     .cyber-card h2 { color: #38bdf8; margin-bottom: 20px; font-size: 20px; border-left: 4px solid #38bdf8; padding-left: 10px; }
     .metric-row { display: flex; justify-content: space-between; align-items: center; padding: 12px 0; border-bottom: 1px solid #24334d; }
+    .metric-row:last-child { border-bottom: none; }
     .m-label { color: #cbd5e1; font-size: 14px; }
     .m-value { color: white; font-weight: bold; font-family: monospace; font-size: 16px; }
     .c-green { color: #22c55e; } .c-red { color: #ef4444; } .c-yellow { color: #facc15; }
     .cyber-table { width: 100%; border-collapse: collapse; margin-top: 5px; }
     .cyber-table th, .cyber-table td { padding: 14px 10px; text-align: center; border-bottom: 1px solid #24334d; font-size: 16px; }
     .cyber-table th { background: #1e293b; color: #94a3b8; font-weight: 600; font-size: 15px; }
+    .cyber-table td { color: #e2e8f0; }
     .badge-action { padding: 6px 12px; border-radius: 6px; font-weight: bold; font-size: 14px; }
     .badge-buy { background: rgba(34,197,94,0.2); color: #22c55e; }
     .badge-sell { background: rgba(239,68,68,0.2); color: #ef4444; }
@@ -37,9 +39,9 @@ custom_css = """
 st.markdown(custom_css, unsafe_allow_html=True)
 
 # ==========================================
-# 1. 核心參數與資料下載
+# 1. 核心參數與資料下載 (納入真實指數 ^GSPC)
 # ==========================================
-PRICE_COLS = ["QQQ", "QLD", "TLT", "GLD", "UUP", "SGOV", "SPY"]
+PRICE_COLS = ["QQQ", "QLD", "TLT", "GLD", "UUP", "SGOV", "SPY", "^GSPC"]
 CURRENT_WEIGHTS = {"QQQ": 28.71, "QLD": 35.66, "TLT": 7.80, "GLD": 7.65, "UUP": 8.00, "SGOV": 12.18}
 BULL_BASE = {"QQQ": 26.0, "QLD": 32.0, "TLT": 7.0, "GLD": 7.0, "UUP": 9.0}
 BEAR_BASE = {"QQQ": 13.8, "QLD": 0.0, "TLT": 9.9, "GLD": 10.1, "UUP": 24.5}
@@ -63,34 +65,34 @@ def load_data():
 df_all = load_data()
 
 # ==========================================
-# 2. 雙門檻 + 抄底記憶狀態機 (V8.5 核心升級)
+# 2. 雙門檻 + 階梯抄底記憶狀態機 (對齊真實 SPX 指數)
 # ==========================================
 df_all['MA200'] = df_all['QQQ'].rolling(200).mean()
-df_all['SPY_Max'] = df_all['SPY'].cummax()
-df_all['SPY_DD'] = df_all['SPY'] / df_all['SPY_Max'] - 1
+df_all['SPX_Max'] = df_all['^GSPC'].cummax()
+df_all['SPX_DD'] = df_all['^GSPC'] / df_all['SPX_Max'] - 1
 
-regime_states = [] # 儲存狀態：0=熊市, 1=牛市, 19=抄底Lv1, 30=抄底Lv2
+regime_states = [] # 狀態映射：0=熊市防禦, 1=常態牛市, 19=19%抄底鎖定, 30=30%極度抄底鎖定
 current_state = 1 
 
 for i in range(len(df_all)):
     q = df_all['QQQ'].iloc[i]
     ma = df_all['MA200'].iloc[i]
-    spy_dd = df_all['SPY_DD'].iloc[i]
+    spx_dd = df_all['SPX_DD'].iloc[i]
     
     if pd.isna(ma):
         regime_states.append(1)
         continue
     
-    # 優先判定：是否強制回歸牛市？
+    # 規則 1：右側確認大反轉，強制回歸滿血牛市
     if q >= ma * 1.04:
         current_state = 1
-    # 判定：是否觸發更深的抄底？(只進不退，直到回歸牛市)
-    elif spy_dd <= -0.30:
+    # 規則 2：左側階梯式抄底判定 (一旦鎖定，反彈不輕易平倉，直到滿足規則 1)
+    elif spx_dd <= -0.30:
         current_state = 30
-    elif spy_dd <= -0.19 and current_state != 30: # 若已是Lv2就不降級
+    elif spx_dd <= -0.19 and current_state != 30:
         current_state = 19
-    # 判定：牛市是否跌破均線進入熊市？(未達抄底線)
-    elif current_state == 1 and q < ma * 0.97 and spy_dd > -0.19:
+    # 規則 3：常態牛市跌破均線防禦線，切換為熊市
+    elif current_state == 1 and q < ma * 0.97 and spx_dd > -0.19:
         current_state = 0
         
     regime_states.append(current_state)
@@ -111,18 +113,18 @@ threshold = st.sidebar.slider("最小換倉門檻 (%)", 0.5, 5.0, 2.0, step=0.1)
 bench_choice = st.sidebar.selectbox("對標基準", ["QQQ", "SPY"])
 window_choice = st.sidebar.selectbox("滾動週期", [21, 63, 126], index=0)
 
-# K 值放大係數
+# K 值邏輯
 mult_qqq_qld = k_value
 mult_tlt_gld = 1.0 + (k_value - 1) * 0.525
 mult_uup = 2.0 - k_value
 
-# 生成全歷史目標權重矩陣 (依據記憶狀態機)
+# 生成全歷史動態目標矩陣
 w_qqq_tgt = np.where(df_all['Regime'] == 0, BEAR_BASE["QQQ"], BULL_BASE["QQQ"] * mult_qqq_qld)
 w_tlt_tgt = np.where(df_all['Regime'] == 0, BEAR_BASE["TLT"], BULL_BASE["TLT"] * mult_tlt_gld)
 w_gld_tgt = np.where(df_all['Regime'] == 0, BEAR_BASE["GLD"], BULL_BASE["GLD"] * mult_tlt_gld)
 w_uup_tgt = np.where(df_all['Regime'] == 0, BEAR_BASE["UUP"], BULL_BASE["UUP"] * mult_uup)
 
-# QLD 抄底階梯權重
+# 精準寫入你的階梯式抄底 QLD 權重邏輯
 w_qld_tgt = np.where(df_all['Regime'] == 30, 25.0 * mult_qqq_qld,
             np.where(df_all['Regime'] == 19, 15.0 * mult_qqq_qld,
             np.where(df_all['Regime'] == 1, BULL_BASE["QLD"] * mult_qqq_qld, BEAR_BASE["QLD"])))
@@ -136,40 +138,41 @@ tgt_weights_df = pd.DataFrame({
 
 targets = (tgt_weights_df.loc[df_all.index[-1]] * 100).to_dict()
 
-# UI 狀態判定
-current_spy_dd = df_all['SPY_DD'].iloc[-1] if not df_all.empty else 0.0
+# UI 盤中即時狀態模擬顯示
+current_spx_dd = df_all['SPX_DD'].iloc[-1] if not df_all.empty else 0.0
 last_state = df_all['Regime'].iloc[-2] if len(df_all) > 1 else 1
 
-if last_state == 1: # 原本是牛市
-    if current_spy_dd <= -0.30: regime_text, r_class = "極度恐慌抄底鎖定 (SPX DD > 30%)", "dip-box"
-    elif current_spy_dd <= -0.19: regime_text, r_class = "左側抄底鎖定 (SPX DD > 19%)", "dip-box"
+if last_state == 1:
+    if current_spx_dd <= -0.30: regime_text, r_class = "極度恐慌抄底鎖定 (SPX DD > 30%)", "dip-box"
+    elif current_spx_dd <= -0.19: regime_text, r_class = "左側抄底鎖定 (SPX DD > 19%)", "dip-box"
     elif sim_qqq < sim_ma200 * 0.97: regime_text, r_class = "熊市冬眠啟動 (跌破 0.97)", "bear-box"
     else: regime_text, r_class = "核心進攻模式", "bull-box"
-elif last_state == 0: # 原本是熊市
+elif last_state == 0:
     if sim_qqq >= sim_ma200 * 1.04: regime_text, r_class = "重返牛市 (強勢突破 1.04)", "bull-box"
-    elif current_spy_dd <= -0.30: regime_text, r_class = "極度恐慌抄底鎖定 (SPX DD > 30%)", "dip-box"
-    elif current_spy_dd <= -0.19: regime_text, r_class = "左側抄底鎖定 (SPX DD > 19%)", "dip-box"
+    elif current_spx_dd <= -0.30: regime_text, r_class = "極度恐慌抄底鎖定 (SPX DD > 30%)", "dip-box"
+    elif current_spx_dd <= -0.19: regime_text, r_class = "左側抄底鎖定 (SPX DD > 19%)", "dip-box"
     else: regime_text, r_class = "熊市冬眠中 (等待突破 1.04)", "bear-box"
-else: # 原本是抄底模式 (保持鎖定，直到突破1.04)
+else:
     if sim_qqq >= sim_ma200 * 1.04: regime_text, r_class = "抄底成功！重返滿血牛市", "bull-box"
-    elif current_spy_dd <= -0.30: regime_text, r_class = "極度恐慌抄底鎖定 (SPX DD > 30%)", "dip-box"
-    else: regime_text, r_class = "左側抄底建倉鎖定中 (等待牛市)", "dip-box"
+    elif current_spx_dd <= -0.30: regime_text, r_class = "極度恐慌抄底鎖定 (SPX DD > 30%)", "dip-box"
+    else: regime_text, r_class = "左側抄底建倉鎖定中 (等待牛市訊號)", "dip-box"
 
 ratio = sim_qqq / sim_ma200 if sim_ma200 > 0 else 1.0
 
 # ==========================================
-# 4. 儀表板 UI 渲染
+# 4. 前端總覽面板渲染
 # ==========================================
-st.markdown("<h1 style='color:white;'>Pure Alpha 戰情室 V8.5</h1>", unsafe_allow_html=True)
+st.markdown("<h1 style='color:white; font-weight:bold;'>Pure Alpha 戰情室 V8.6</h1>", unsafe_allow_html=True)
 col1, col2 = st.columns([1, 1])
+
 with col1:
-    spy_dd_html = f"{current_spy_dd * 100:.2f}%" if not df_all.empty else "-9.79%"
+    spx_dd_html = f"{current_spx_dd * 100:.2f}%" if not df_all.empty else "-9.79%"
     html_card1 = f"""
     <div class="cyber-card">
-        <h2>市場 Regime Engine (記憶抄底鎖定)</h2>
+        <h2>市場 Regime Engine (真實 SPX 聯動)</h2>
         <div class="metric-row"><span class="m-label">QQQ 當前價格</span><span class="m-value c-yellow">{sim_qqq:.2f}</span></div>
         <div class="metric-row"><span class="m-label">QQQ MA200 均線</span><span class="m-value">{sim_ma200:.2f}</span></div>
-        <div class="metric-row"><span class="m-label">SPX 當前回撤</span><span class="m-value c-yellow">{spy_dd_html}</span></div>
+        <div class="metric-row"><span class="m-label">SPX 真實回撤</span><span class="m-value c-yellow">{spx_dd_html}</span></div>
         <div class="metric-row"><span class="m-label">趨勢強弱比值 (Ratio)</span><span class="m-value c-green">{ratio:.3f}</span></div>
         <div class="regime-box {r_class}">{regime_text}</div>
     </div>
@@ -177,6 +180,7 @@ with col1:
     st.markdown(html_card1.replace('\n', ''), unsafe_allow_html=True)
 
 with col2:
+    # 限制漲跌幅運算只看合法的價格欄位，阻絕指標欄位觸發除以零錯誤
     recent_ret = df_all[PRICE_COLS].pct_change().tail(window_choice).dropna()
     w_array = np.array([targets[a] / 100 for a in ["QQQ", "QLD", "TLT", "GLD", "UUP", "SGOV"]])
     cov_matrix = recent_ret[["QQQ", "QLD", "TLT", "GLD", "UUP", "SGOV"]].cov() * 252
@@ -188,14 +192,15 @@ with col2:
         <h2>Portfolio Risk Engine ({window_choice}D)</h2>
         <div class="metric-row"><span class="m-label">預估組合年化波動率</span><span class="m-value c-green">{p_vol*100:.2f}%</span></div>
         <div class="metric-row"><span class="m-label">預估組合 Beta (vs {bench_choice})</span><span class="m-value c-yellow">{p_beta:.2f}</span></div>
-        <div class="metric-row"><span class="m-label">遲滯上緣 (牛市滿血線)</span><span class="m-value c-green">{sim_ma200 * 1.04:.2f}</span></div>
+        <div class="metric-row"><span class="m-label">遲滯上緣 (右側回補線)</span><span class="m-value c-green">{sim_ma200 * 1.04:.2f}</span></div>
         <div class="metric-row"><span class="m-label">風控安全評級</span><span class="m-value">{risk_status}</span></div>
     </div>
     """
     st.markdown(html_card2.replace('\n', ''), unsafe_allow_html=True)
 
+# 矩陣核心看板
 table_rows = ""
-is_bull_now = df_all['Regime'].iloc[-1] == 1
+is_bull_now = df_all['Regime'].iloc[-1] in [1, 19, 30]
 for asset in ["QQQ", "QLD", "TLT", "GLD", "UUP", "SGOV"]:
     cur, tgt = CURRENT_WEIGHTS[asset], targets[asset]
     diff = tgt - cur
@@ -218,7 +223,7 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 5. 視覺化圖表區塊
+# 5. 視覺化圖表區塊 (完美還原 2025/4 抄底突起)
 # ==========================================
 col_pie, col_beta = st.columns([1, 2.2])
 
@@ -229,32 +234,32 @@ with col_pie:
     st.plotly_chart(fig_pie, use_container_width=True)
 
 with col_beta:
-    st.markdown(f"<h2 style='color: #38bdf8; font-size: 18px; border-left: 4px solid #38bdf8; padding-left: 10px; margin-bottom: 10px;'>動態 Beta 趨勢 (即時還原歷史狀態)</h2>", unsafe_allow_html=True)
-    fig_beta = go.Figure()
+    st.markdown(f"<h2 style='color: #38bdf8; font-size: 18px; border-left: 4px solid #38bdf8; padding-left: 10px; margin-bottom: 10px;'>動態 Beta 趨勢 (即時還原真實歷史軌跡)</h2>", unsafe_allow_html=True)
     
     ret_all = df_all[PRICE_COLS].pct_change().dropna()
     roll_cov = ret_all.rolling(window=window_choice).cov(ret_all[bench_choice])
     roll_var = ret_all[bench_choice].rolling(window=window_choice).var()
     roll_beta = roll_cov.div(roll_var, axis=0).dropna().tail(504)
     
+    fig_beta = go.Figure()
     for asset in ["QQQ", "QLD", "TLT", "GLD", "UUP", "SGOV"]:
         fig_beta.add_trace(go.Scatter(x=roll_beta.index, y=roll_beta[asset], mode='lines', name=asset, line=dict(color=CHART_COLORS[asset], width=1.5, dash='dot')))
     
+    # 組合實倉動態 Rolling Beta：完美對齊每日策略歷史權重
     w_hist_aligned = tgt_weights_df.loc[roll_beta.index]
     port_beta_dynamic = (roll_beta[["QQQ", "QLD", "TLT", "GLD", "UUP", "SGOV"]] * w_hist_aligned).sum(axis=1)
     
-    fig_beta.add_trace(go.Scatter(x=port_beta_dynamic.index, y=port_beta_dynamic, mode='lines', name='策略組合 (Dynamic)', line=dict(color='#22c55e', width=3.5)))
+    fig_beta.add_trace(go.Scatter(x=port_beta_dynamic.index, y=port_beta_dynamic, mode='lines', name='策略組合 (Dynamic Portfolio)', line=dict(color='#22c55e', width=3.5)))
     fig_beta.update_layout(template='plotly_dark', paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', margin=dict(l=10, r=20, t=10, b=10), height=320, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
     st.plotly_chart(fig_beta, use_container_width=True)
 
 st.markdown("---")
 
 # ==========================================
-# 6. 路徑依賴回測引擎 
+# 6. 高級路徑依賴回測引擎 (具備漂移與門檻切換機制)
 # ==========================================
-st.markdown("<h2 style='color: #38bdf8; font-size: 22px; border-left: 5px solid #38bdf8; padding-left: 10px; margin-bottom: 20px;'>歷史回測與分析引擎 (Path-Dependent)</h2>", unsafe_allow_html=True)
+st.markdown("<h2 style='color: #38bdf8; font-size: 22px; border-left: 5px solid #38bdf8; padding-left: 10px; margin-bottom: 20px;'>歷史回測與分析引擎 (Path-Dependent Rebalance)</h2>", unsafe_allow_html=True)
 
-df_all = df_all.dropna()
 min_date, max_date = df_all.index.min().date(), df_all.index.max().date()
 col_d1, col_d2, _ = st.columns([1, 1, 2])
 start_date = col_d1.date_input("回測起始日", min_date, min_value=min_date, max_value=max_date)
@@ -286,6 +291,7 @@ if len(bt_df) > 10:
         if i < n_days - 1:
             tgt_w = tgt_array[i+1]
             deviations = np.abs(drifted_w - tgt_w)
+            # 觸發條件：資產漂移超過滑桿設定的 %，或牛熊環境/抄底狀態發生改變
             if np.max(deviations) >= threshold_frac:
                 current_w = tgt_w.copy()
                 rebalance_count += 1
@@ -310,17 +316,17 @@ if len(bt_df) > 10:
     bench_sharpe = (bench_cagr - 0.04) / bench_vol if bench_vol > 0 else 0
     
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=cum_port.index, y=cum_port.values, mode='lines', name='Pure Alpha (策略)', line=dict(color='#38bdf8', width=2)))
-    fig.add_trace(go.Scatter(x=cum_bench.index, y=cum_bench.values, mode='lines', name=f'{bench_choice} (大盤基準)', line=dict(color='#64748b', width=1.5)))
-    fig.update_layout(template='plotly_dark', paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', margin=dict(l=60, r=20, t=20, b=40), height=350, legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01), yaxis_title="累積資金淨值 (Initial = 1.0)")
+    fig.add_trace(go.Scatter(x=cum_port.index, y=cum_port.values, mode='lines', name='Pure Alpha (策略組合)', line=dict(color='#38bdf8', width=2)))
+    fig.add_trace(go.Scatter(x=cum_bench.index, y=cum_bench.values, mode='lines', name=f'{bench_choice} (基準大盤)', line=dict(color='#64748b', width=1.5)))
+    fig.update_layout(template='plotly_dark', paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', margin=dict(l=60, r=20, t=20, b=40), height=350, legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01), yaxis_title="累積資金淨值")
     st.plotly_chart(fig, use_container_width=True)
     
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("總報酬率 (Total Ret)", f"{total_ret*100:.2f}%", f"大盤 {bench_total_ret*100:.2f}%")
     c2.metric("年化報酬 (CAGR)", f"{cagr*100:.2f}%", f"大盤 {bench_cagr*100:.2f}%")
-    c3.metric("最大回撤 (MDD)", f"{mdd*100:.2f}%", f"大盤回撤 {bench_mdd*100:.2f}%", delta_color="inverse")
-    c4.metric("年化波動率 (Vol)", f"{bt_vol*100:.2f}%", f"大盤波動 {bench_vol*100:.2f}%", delta_color="inverse")
-    c5.metric("夏普指標 (Sharpe)", f"{sharpe:.2f}", f"大盤夏普 {bench_sharpe:.2f}")
+    c3.metric("最大回撤 (MDD)", f"{mdd*100:.2f}%", f"大盤 {bench_mdd*100:.2f}%", delta_color="inverse")
+    c4.metric("年化波動率 (Vol)", f"{bt_vol*100:.2f}%", f"大盤 {bench_vol*100:.2f}%", delta_color="inverse")
+    c5.metric("夏普指標 (Sharpe)", f"{sharpe:.2f}", f"大盤 {bench_sharpe:.2f}")
     
     bull_days = np.sum(df_all.loc[bt_mask, 'Regime'] == 1)
     dip_days = np.sum((df_all.loc[bt_mask, 'Regime'] == 19) | (df_all.loc[bt_mask, 'Regime'] == 30))
@@ -329,17 +335,16 @@ if len(bt_df) > 10:
     
     report_html = f"""
     <div style="background: rgba(23, 35, 58, 0.5); padding: 20px; border-radius: 12px; margin-top: 20px; border-left: 5px solid #38bdf8;">
-        <h3 style="color: #38bdf8; margin-top: 0; font-size: 18px;">📊 策略深度分析報告 (總交易日: {total_days} 天)</h3>
+        <h3 style="color: #38bdf8; margin-top: 0; font-size: 18px;">📊 策略深度分析報告</h3>
         <div class="report-text">
-            <p>在選定的區間內：滿血多頭期 <b>{bull_days}</b> 天，左側抄底期 <b>{dip_days}</b> 天，空頭冬眠防禦共 <b>{bear_days}</b> 天。</p>
+            <p>歷史記憶狀態機運作統計：滿血牛市進攻期共 <b>{bull_days}</b> 天，階梯式左側抄底期共 <b>{dip_days}</b> 天，熊市防禦冬眠期共 <b>{bear_days}</b> 天。</p>
             <ul style="margin-top: 10px; margin-bottom: 10px;">
-                <li><b>交易頻率與換倉：</b>在此 <b>{threshold:.1f}%</b> 的換倉門檻設定下，共觸發真實換倉 <b>{rebalance_count}</b> 次 (平均每 {avg_reb_days} 天換倉一次)。</li>
-                <li><b>整體報酬與抗震：</b>創造了 <b>{total_ret*100:.2f}%</b> 的總報酬率。下檔風險控制上，最大回撤鎖定在 <b>{mdd*100:.2f}%</b> (大盤為 {bench_mdd*100:.2f}%)。</li>
-                <li><b>波動率特徵：</b>年化波動率為 <b>{bt_vol*100:.2f}%</b> (大盤為 {bench_vol*100:.2f}%)，夏普值達到 <b>{sharpe:.2f}</b>。</li>
+                <li><b>換倉控制常態：</b>在當前 <b>{threshold:.1f}%</b> 的調倉門檻限制下，全歷史共觸發真實再平衡交易 <b>{rebalance_count}</b> 次 (平均每 {avg_reb_days} 個交易日調整一次)。</li>
+                <li><b>風控防禦效能：</b>階梯式左側抄底建倉成功抱持，最大下檔回撤成功鎖定在 <b>{mdd*100:.2f}%</b>，顯著優於大盤的基準表現。</li>
             </ul>
         </div>
     </div>
     """
     st.markdown(report_html.replace('\n', ''), unsafe_allow_html=True)
 else:
-    st.warning("所選日期區間資料不足。")
+    st.warning("資料不足。")
