@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 # ==========================================
 # 0. 網頁基礎設定與終極 CSS
 # ==========================================
-st.set_page_config(page_title="Pure Alpha 戰情室 V8.8 (終極專業版)", layout="wide")
+st.set_page_config(page_title="Pure Alpha 多資產對沖策略戰情室", layout="wide")
 
 custom_css = """
 <style>
@@ -35,6 +35,7 @@ custom_css = """
     .bull-box { background: rgba(34,197,94,0.15); border: 1px solid #22c55e; color: #22c55e; }
     .bear-box { background: rgba(239,68,68,0.15); border: 1px solid #ef4444; color: #ef4444; }
     .dip-box { background: rgba(56,189,248,0.15); border: 1px solid #38bdf8; color: #38bdf8; }
+    .version-footer { text-align: center; color: #64748b; font-size: 12px; margin-top: 50px; padding: 20px 0; border-top: 1px solid #24334d; }
 </style>
 """
 st.markdown(custom_css, unsafe_allow_html=True)
@@ -52,6 +53,7 @@ CHART_COLORS = {"QQQ": "#38bdf8", "QLD": "#818cf8", "TLT": "#f472b6", "GLD": "#f
 @st.cache_data(ttl=3600)
 def load_data():
     data_dict = {}
+    # 1. 抓取一般 ETF
     for t in PRICE_COLS:
         try:
             df = yf.download(t, period="10y", progress=False)
@@ -62,6 +64,7 @@ def load_data():
                     data_dict["SPY_Low"] = df['Low'].iloc[:, 0] if isinstance(df['Low'], pd.DataFrame) else df['Low']
         except Exception: pass
     
+    # 2. 強制抓取 SPX (包含 High/Low)
     for _ in range(3):
         try:
             spx_df = yf.download("^GSPC", period="10y", progress=False)
@@ -189,7 +192,8 @@ ratio = sim_qqq / sim_ma200 if sim_ma200 > 0 else 1.0
 # ==========================================
 # 4. 前端總覽面板渲染
 # ==========================================
-st.markdown("<h1 style='color:white; font-weight:bold;'>Pure Alpha 戰情室 V8.8</h1>", unsafe_allow_html=True)
+# 更改為新的、更大氣的標題
+st.markdown("<h1 style='color:white; font-weight:bold;'>Pure Alpha 多資產對沖策略戰情室</h1>", unsafe_allow_html=True)
 col1, col2 = st.columns([1, 1])
 
 with col1:
@@ -279,7 +283,7 @@ with col_beta:
 st.markdown("---")
 
 # ==========================================
-# 6. 高級路徑依賴回測引擎與分析報告
+# 6. 高級路徑依賴回測引擎 
 # ==========================================
 st.markdown("<h2 style='color: #38bdf8; font-size: 22px; border-left: 5px solid #38bdf8; padding-left: 10px; margin-bottom: 20px;'>歷史回測與分析引擎 (Path-Dependent Rebalance)</h2>", unsafe_allow_html=True)
 
@@ -410,3 +414,6 @@ with st.expander("🔍 歷史回撤與觸發除錯檢視 (Data Inspector)"):
     debug_df = df_all[['QQQ', 'MA200', spx_col, h_col, l_col, 'SPX_DD', 'Regime']].tail(100).copy()
     debug_df['SPX_DD'] = (debug_df['SPX_DD'] * 100).round(2).astype(str) + '%'
     st.dataframe(debug_df.sort_index(ascending=False))
+
+# 標示版本號 (放置於頁尾)
+st.markdown('<div class="version-footer">Powered by Pure Alpha Quantitative Engine | Version 8.8 (Intraday & Beta Build)</div>', unsafe_allow_html=True)
