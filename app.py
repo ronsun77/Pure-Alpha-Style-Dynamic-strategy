@@ -63,19 +63,25 @@ CHART_COLORS = {tk_core: "#38bdf8", tk_lev: "#818cf8", tk_bond: "#f472b6", tk_go
 # ==========================================
 # 2. 核心資料下載引擎
 # ==========================================
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=3600, show_spinner=False) # 關閉預設的 loading spinner，自己處理狀態
 def load_data(tickers_tuple):
     data_dict = {}
     for t in tickers_tuple:
         try:
-            df = yf.download(t, period="10y", progress=False)
-            if not df.empty and 'Close' in df.columns:
-                data_dict[t] = df['Close'].iloc[:, 0] if isinstance(df['Close'], pd.DataFrame) else df['Close']
-                if t == "SPY":
-                    data_dict["SPY_High"] = df['High'].iloc[:, 0] if isinstance(df['High'], pd.DataFrame) else df['High']
-                    data_dict["SPY_Low"] = df['Low'].iloc[:, 0] if isinstance(df['Low'], pd.DataFrame) else df['Low']
-        except Exception: pass
+            # 增加一些重試機制，對抗不穩定的 API
+            for _ in range(3):
+                df = yf.download(t, period="10y", progress=False)
+                if not df.empty and 'Close' in df.columns:
+                    data_dict[t] = df['Close'].iloc[:, 0] if isinstance(df['Close'], pd.DataFrame) else df['Close']
+                    if t == "SPY":
+                        data_dict["SPY_High"] = df['High'].iloc[:, 0] if isinstance(df['High'], pd.DataFrame) else df['High']
+                        data_dict["SPY_Low"] = df['Low'].iloc[:, 0] if isinstance(df['Low'], pd.DataFrame) else df['Low']
+                    break # 成功下載就跳出重試迴圈
+                time.sleep(1) # 失敗的話等一秒再試
+        except Exception: 
+            pass
     
+    # 獨立抓取 SPX
     for _ in range(3):
         try:
             spx_df = yf.download("^GSPC", period="10y", progress=False)
@@ -85,33 +91,51 @@ def load_data(tickers_tuple):
                 data_dict["SPX_Low"] = spx_df['Low'].iloc[:, 0] if isinstance(spx_df['Low'], pd.DataFrame) else spx_df['Low']
                 break
         except Exception:
-            time.sleep(0.5)
+            time.sleep(1)
 
-    if data_dict: return pd.concat(data_dict, axis=1).dropna()
+    if data_dict: 
+        return pd.concat(data_dict, axis=1).dropna()
     return pd.DataFrame()
 
+# 開始下載資料
 fetch_list = tuple(set(PORTFOLIO_ASSETS + ["SPY"]))
-df_all = load_data(fetch_list)
 
+with st.spinner('正在從 Yahoo Finance 同步最新市場數據...'):
+    df_all = load_data(fetch_list)
+
+# 嚴格的防呆機制：確保必要的資料都存在
 missing_assets = [a for a in PORTFOLIO_ASSETS if a not in df_all.columns]
-if missing_assets:
-    st.error(f"⚠️ 無法下載以下標的資料，請檢查代碼是否正確：{', '.join(missing_assets)}")
+
+if df_all.empty:
+    st.error("🚨 無法連接至 Yahoo Finance 獲取任何市場數據，這通常是雲端伺服器暫時被阻擋，請稍後重整網頁再試。")
+    st.stop()
+    
+if tk_core not in df_all.columns:
+    st.error(f"🚨 核心標的 '{tk_core}' 下載失敗！無法執行策略計算，請確認代碼是否正確，或稍後再試。")
     st.stop()
 
+if missing_assets:
+    st.warning(f"⚠️ 以下標的資料下載失敗：{', '.join(missing_assets)}。系統將只顯示成功獲取的資產，但回測與權重計算可能不完整。")
+
+# 決定基準指數
 spx_col = '^GSPC' if '^GSPC' in df_all.columns else 'SPY'
 if spx_col == '^GSPC':
     h_col, l_col = 'SPX_High', 'SPX_Low'
 else:
     h_col, l_col = 'SPY_High', 'SPY_Low'
+    if 'SPY_High' not in df_all.columns or 'SPY_Low' not in df_all.columns:
+         st.error("🚨 基準大盤 (SPY) 的盤中高低點資料下載失敗，無法計算真實回撤。請稍後再試。")
+         st.stop()
 
-# 防呆機制：過濾出實際存在於 df_all 的標的
+# 過濾出實際存在於 df_all 的標的，避免後續 KeyError
 AVAILABLE_ASSETS = [c for c in PORTFOLIO_ASSETS if c in df_all.columns]
+CHART_PRICE_COLS = AVAILABLE_ASSETS
 
 # ==========================================
 # 3. 滑桿參數提取
 # ==========================================
-latest_core = float(df_all[tk_core].iloc[-1]) if not df_all.empty else 717.54
-computed_ma200 = float(df_all[tk_core].rolling(200).mean().iloc[-1]) if not df_all.empty else 612.72
+latest_core = float(df_all[tk_core].iloc[-1])
+computed_ma200 = float(df_all[tk_core].rolling(200).mean().iloc[-1]) if len(df_all) >= 200 else latest_core
 
 sim_core = st.sidebar.slider(f"{tk_core} 模擬/現價", 100.0, 900.0, latest_core, step=0.01)
 sim_ma200 = st.sidebar.slider(f"{tk_core} MA200 基準線", 100.0, 800.0, computed_ma200, step=0.01)
@@ -122,7 +146,10 @@ st.sidebar.markdown("<h3 style='color:#facc15;'>左側抄底門檻設定</h3>", 
 dip_lv1 = st.sidebar.slider("Lv1 抄底門檻 (%)", 10.0, 25.0, 19.0, step=0.1) 
 dip_lv2 = st.sidebar.slider("Lv2 恐慌門檻 (%)", 20.0, 40.0, 30.0, step=0.1) 
 
-bench_choice = st.sidebar.selectbox("對標基準", [tk_core, "SPY", "^GSPC"] if "^GSPC" in df_all.columns else [tk_core, "SPY"])
+bench_options = [tk_core, "SPY"]
+if "^GSPC" in df_all.columns: bench_options.append("^GSPC")
+bench_choice = st.sidebar.selectbox("對標基準", bench_options, index=1 if "SPY" in bench_options else 0)
+
 window_choice = st.sidebar.selectbox("滾動週期", [21, 63, 126], index=0)
 
 dip_lv1_frac = dip_lv1 / 100.0
@@ -133,6 +160,7 @@ dip_lv2_frac = dip_lv2 / 100.0
 # ==========================================
 df_all['MA200'] = df_all[tk_core].rolling(200).mean()
 
+# 盤中真實回撤
 df_all['SPX_Max'] = df_all[h_col].cummax()
 df_all['SPX_DD'] = df_all[l_col] / df_all['SPX_Max'] - 1
 
@@ -188,7 +216,7 @@ tgt_weights_df[tk_safe] = w_safe_tgt / 100.0
 targets = (tgt_weights_df.loc[df_all.index[-1]] * 100).to_dict()
 
 # UI 盤中狀態判定
-current_spx_dd = df_all['SPX_DD'].iloc[-1] if not df_all.empty else 0.0
+current_spx_dd = df_all['SPX_DD'].iloc[-1]
 last_state = df_all['Regime'].iloc[-2] if len(df_all) > 1 else 1
 
 if last_state == 1:
@@ -215,7 +243,7 @@ st.markdown("<h1 style='color:white; font-weight:bold;'>Pure Alpha 多資產對�
 col1, col2 = st.columns([1, 1])
 
 with col1:
-    spx_dd_html = f"{current_spx_dd * 100:.2f}%" if not df_all.empty else "-9.79%"
+    spx_dd_html = f"{current_spx_dd * 100:.2f}%"
     html_card1 = f"""
     <div class="cyber-card">
         <h2>市場 Regime Engine ({spx_col} 聯動)</h2>
@@ -229,12 +257,23 @@ with col1:
     st.markdown(html_card1.replace('\n', ''), unsafe_allow_html=True)
 
 with col2:
-    recent_ret = df_all[AVAILABLE_ASSETS].pct_change().tail(window_choice).dropna()
-    w_array = np.array([targets[a] / 100 for a in AVAILABLE_ASSETS])
-    cov_matrix = recent_ret.cov() * 252
-    p_vol = np.sqrt(np.dot(w_array.T, np.dot(cov_matrix, w_array))) if len(AVAILABLE_ASSETS) > 0 else 0
-    p_beta = (recent_ret.dot(w_array).cov(df_all[bench_choice].pct_change().tail(window_choice).dropna()) * 252) / (df_all[bench_choice].pct_change().tail(window_choice).dropna().var() * 252) if len(AVAILABLE_ASSETS) > 0 else 0
-    risk_status = '<span class="c-green">進攻效能優異 (RISK ON)</span>' if p_beta > 0.7 else '<span class="c-red">避險防禦狀態 (RISK OFF)</span>'
+    if len(AVAILABLE_ASSETS) > 0 and bench_choice in df_all.columns:
+        recent_ret = df_all[AVAILABLE_ASSETS].pct_change().tail(window_choice).dropna()
+        w_array = np.array([targets.get(a, 0) / 100 for a in AVAILABLE_ASSETS])
+        cov_matrix = recent_ret.cov() * 252
+        p_vol = np.sqrt(np.dot(w_array.T, np.dot(cov_matrix, w_array))) if not recent_ret.empty else 0
+        
+        bench_ret = df_all[bench_choice].pct_change().tail(window_choice).dropna()
+        if not recent_ret.empty and not bench_ret.empty and len(recent_ret) == len(bench_ret):
+            p_beta = (recent_ret.dot(w_array).cov(bench_ret) * 252) / (bench_ret.var() * 252)
+        else:
+            p_beta = 0
+            
+        risk_status = '<span class="c-green">進攻效能優異 (RISK ON)</span>' if p_beta > 0.7 else '<span class="c-red">避險防禦狀態 (RISK OFF)</span>'
+    else:
+        p_vol, p_beta = 0, 0
+        risk_status = "資料不足"
+        
     html_card2 = f"""
     <div class="cyber-card">
         <h2>Portfolio Risk Engine ({window_choice}D)</h2>
@@ -256,9 +295,14 @@ for asset in AVAILABLE_ASSETS:
     elif diff <= -threshold: action, act_class = "SELL", "badge-sell"
     if not is_bull_now and asset == tk_lev and cur > tgt: action, act_class = "REDUCE", "badge-critical"
     
-    vol_str = f"{recent_ret[asset].std() * np.sqrt(252) * 100:.1f}%" if asset in recent_ret else "0.0%"
-    corr = recent_ret[asset].corr(df_all[bench_choice].pct_change().tail(window_choice).dropna()) if asset in recent_ret else 0.0
-    beta_str = f"{recent_ret[asset].cov(df_all[bench_choice].pct_change().tail(window_choice).dropna()) / df_all[bench_choice].pct_change().tail(window_choice).dropna().var():.2f}" if asset in recent_ret else "0.0"
+    vol_str = f"{recent_ret[asset].std() * np.sqrt(252) * 100:.1f}%" if 'recent_ret' in locals() and asset in recent_ret else "0.0%"
+    
+    if 'recent_ret' in locals() and asset in recent_ret and 'bench_ret' in locals() and not bench_ret.empty:
+        corr = recent_ret[asset].corr(bench_ret)
+        beta_str = f"{recent_ret[asset].cov(bench_ret) / bench_ret.var():.2f}"
+    else:
+        corr, beta_str = 0.0, "0.0"
+        
     bg_color = "background: rgba(56, 189, 248, 0.05);" if asset == tk_safe else ""
     table_rows += f'<tr style="{bg_color}"><td style="text-align:left; padding-left:15px;"><b>{asset}</b> <span style="color:#64748b; font-size:13px;">{ASSET_ROLES.get(asset,"")}</span></td><td style="font-family:monospace;">{cur:.2f}%</td><td style="font-family:monospace; font-weight:bold; color:white;">{tgt:.2f}%</td><td style="font-family:monospace; color:{"#22c55e" if diff>=0 else "#ef4444"};">{diff:+.2f}%</td><td style="font-family:monospace; color:#38bdf8;">{vol_str}</td><td style="font-family:monospace; color:{"#22c55e" if corr>0.4 else "#ef4444" if corr<-0.1 else "#facc15"};">{corr:.2f}</td><td style="font-family:monospace;">{beta_str}</td><td><span class="badge-action {act_class}">{action}</span></td></tr>'
 
@@ -282,21 +326,24 @@ with col_pie:
 with col_beta:
     st.markdown(f"<h2 style='color: #38bdf8; font-size: 18px; border-left: 4px solid #38bdf8; padding-left: 10px; margin-bottom: 10px;'>動態 Beta 趨勢 (即時還原真實歷史軌跡)</h2>", unsafe_allow_html=True)
     
-    ret_all = df_all[AVAILABLE_ASSETS + [bench_choice]].pct_change().dropna()
-    roll_cov = ret_all[AVAILABLE_ASSETS].rolling(window=window_choice).cov(ret_all[bench_choice])
-    roll_var = ret_all[bench_choice].rolling(window=window_choice).var()
-    roll_beta = roll_cov.div(roll_var, axis=0).dropna().tail(504)
-    
-    fig_beta = go.Figure()
-    for asset in AVAILABLE_ASSETS:
-        fig_beta.add_trace(go.Scatter(x=roll_beta.index, y=roll_beta[asset], mode='lines', name=asset, line=dict(color=CHART_COLORS.get(asset, "#94a3b8"), width=1.5, dash='dot')))
-    
-    w_hist_aligned = tgt_weights_df.loc[roll_beta.index]
-    port_beta_dynamic = (roll_beta[AVAILABLE_ASSETS] * w_hist_aligned[AVAILABLE_ASSETS]).sum(axis=1)
-    
-    fig_beta.add_trace(go.Scatter(x=port_beta_dynamic.index, y=port_beta_dynamic, mode='lines', name='策略組合 (Dynamic Portfolio)', line=dict(color='#22c55e', width=3.5)))
-    fig_beta.update_layout(template='plotly_dark', paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', margin=dict(l=10, r=20, t=10, b=10), height=320, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
-    st.plotly_chart(fig_beta, use_container_width=True)
+    if len(AVAILABLE_ASSETS) > 0 and bench_choice in df_all.columns:
+        ret_all = df_all[AVAILABLE_ASSETS + [bench_choice]].pct_change().dropna()
+        roll_cov = ret_all[AVAILABLE_ASSETS].rolling(window=window_choice).cov(ret_all[bench_choice])
+        roll_var = ret_all[bench_choice].rolling(window=window_choice).var()
+        roll_beta = roll_cov.div(roll_var, axis=0).dropna().tail(504)
+        
+        fig_beta = go.Figure()
+        for asset in AVAILABLE_ASSETS:
+            fig_beta.add_trace(go.Scatter(x=roll_beta.index, y=roll_beta[asset], mode='lines', name=asset, line=dict(color=CHART_COLORS.get(asset, "#94a3b8"), width=1.5, dash='dot')))
+        
+        w_hist_aligned = tgt_weights_df.loc[roll_beta.index]
+        port_beta_dynamic = (roll_beta[AVAILABLE_ASSETS] * w_hist_aligned[AVAILABLE_ASSETS]).sum(axis=1)
+        
+        fig_beta.add_trace(go.Scatter(x=port_beta_dynamic.index, y=port_beta_dynamic, mode='lines', name='策略組合 (Dynamic Portfolio)', line=dict(color='#22c55e', width=3.5)))
+        fig_beta.update_layout(template='plotly_dark', paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', margin=dict(l=10, r=20, t=10, b=10), height=320, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+        st.plotly_chart(fig_beta, use_container_width=True)
+    else:
+        st.warning("無法計算 Rolling Beta，請確認基準標的與資產資料是否完整。")
 
 st.markdown("---")
 
@@ -313,11 +360,10 @@ end_date = col_d2.date_input("回測結束日", max_date, min_value=min_date, ma
 bt_mask = (df_all.index.date >= start_date) & (df_all.index.date <= end_date)
 bt_df = df_all.loc[bt_mask]
 
-# 關鍵防呆：只拿有成功下載到的資產來回測
 valid_assets = [a for a in PORTFOLIO_ASSETS if a in bt_df.columns]
-valid_cols = valid_assets + [bench_choice]
+valid_cols = valid_assets + [bench_choice] if bench_choice in bt_df.columns else valid_assets
 
-if len(bt_df) > 10 and len(valid_assets) > 0:
+if len(bt_df) > 10 and len(valid_assets) > 0 and bench_choice in bt_df.columns:
     bt_ret = bt_df[valid_cols].pct_change().dropna()
     tgt_weights_sub = tgt_weights_df.loc[bt_ret.index]
     
@@ -426,16 +472,19 @@ if len(bt_df) > 10 and len(valid_assets) > 0:
     """
     st.markdown(report_html.replace('\n', ''), unsafe_allow_html=True)
 else:
-    st.warning("資料不足。請確認所選回測期間內，所有資產代碼皆有歷史價格數據。")
+    st.warning("資料不足。請確認所選回測期間內，所有資產代碼皆有歷史價格數據，且基準對標存在。")
 
 # ==========================================
 # 8. 除錯透視鏡 (隱藏面板)
 # ==========================================
 with st.expander("🔍 歷史回撤與觸發除錯檢視 (Data Inspector)"):
     st.markdown("在此確認 Yahoo Finance 計算的回撤是否與你的 Excel 有微小落差。")
-    debug_df = df_all[[tk_core, 'MA200', spx_col, h_col, l_col, 'SPX_DD', 'Regime']].tail(100).copy()
-    debug_df['SPX_DD'] = (debug_df['SPX_DD'] * 100).round(2).astype(str) + '%'
-    st.dataframe(debug_df.sort_index(ascending=False))
+    if tk_core in df_all.columns and spx_col in df_all.columns:
+        debug_df = df_all[[tk_core, 'MA200', spx_col, h_col, l_col, 'SPX_DD', 'Regime']].tail(100).copy()
+        debug_df['SPX_DD'] = (debug_df['SPX_DD'] * 100).round(2).astype(str) + '%'
+        st.dataframe(debug_df.sort_index(ascending=False))
+    else:
+        st.write("資料不齊全，無法顯示除錯表。")
 
 # 標示版本號 (放置於頁尾)
-st.markdown('<div class="version-footer">Powered by Pure Alpha Quantitative Engine | Version 8.8 (Dynamic Tickers & Beta Build)</div>', unsafe_allow_html=True)
+st.markdown('<div class="version-footer">Powered by Pure Alpha Quantitative Engine | Version 8.8.1 (Robust Loading)</div>', unsafe_allow_html=True)
