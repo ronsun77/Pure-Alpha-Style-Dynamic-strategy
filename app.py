@@ -4,7 +4,6 @@ import numpy as np
 import yfinance as yf
 import plotly.graph_objects as go
 import time
-from datetime import datetime, timedelta
 
 # ==========================================
 # 0. 網頁基礎設定與終極 CSS
@@ -61,7 +60,7 @@ ASSET_ROLES = {tk_core: "核心成長引擎", tk_lev: "動能槓桿放大", tk_b
 CHART_COLORS = {tk_core: "#38bdf8", tk_lev: "#818cf8", tk_bond: "#f472b6", tk_gold: "#facc15", tk_usd: "#ef4444", tk_safe: "#94a3b8"}
 
 # ==========================================
-# 2. 核心資料下載引擎
+# 2. 核心資料下載引擎 
 # ==========================================
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_data(tickers_tuple):
@@ -150,7 +149,7 @@ dip_lv1_frac = dip_lv1 / 100.0
 dip_lv2_frac = dip_lv2 / 100.0
 
 # ==========================================
-# 4. 雙門檻 + 盤中觸價狀態機
+# 4. 雙門檻 + 盤中觸價狀態機 (Pandas 原生運算)
 # ==========================================
 df_all['MA200'] = df_all[tk_core].rolling(200).mean()
 df_all['SPX_Max'] = df_all[h_col].cummax()
@@ -186,32 +185,27 @@ for i in range(len(df_all)):
 
 df_all['Regime'] = regime_states
 
+# 權重生成 (完全基於 DataFrame 的 Series 運算，保證長度絕對對齊)
 mult_core_lev = k_value
 mult_bond_gold = 1.0 + (k_value - 1) * 0.525
 mult_usd = 2.0 - k_value
 
-# 使用 .values 確保產生的是乾淨的 Numpy Array，避免 DataFrame 賦值時報錯
-regime_arr = df_all['Regime'].values
-w_core_tgt = np.where(regime_arr == 0, BEAR_BASE[tk_core], BULL_BASE[tk_core] * mult_core_lev)
-w_bond_tgt = np.where(regime_arr == 0, BEAR_BASE[tk_bond], BULL_BASE[tk_bond] * mult_bond_gold)
-w_gold_tgt = np.where(regime_arr == 0, BEAR_BASE[tk_gold], BULL_BASE[tk_gold] * mult_bond_gold)
-w_usd_tgt = np.where(regime_arr == 0, BEAR_BASE[tk_usd], BULL_BASE[tk_usd] * mult_usd)
+tgt_weights_df = pd.DataFrame(index=df_all.index)
 
-condlist = [regime_arr == 30, regime_arr == 19, regime_arr == 1]
-choicelist = [25.0 * mult_core_lev, 15.0 * mult_core_lev, BULL_BASE[tk_lev] * mult_core_lev]
-w_lev_tgt = np.select(condlist, choicelist, default=0.0)
+# 核心資產
+tgt_weights_df[tk_core] = np.where(df_all['Regime'] == 0, BEAR_BASE[tk_core]/100.0, (BULL_BASE[tk_core]/100.0) * mult_core_lev)
+tgt_weights_df[tk_bond] = np.where(df_all['Regime'] == 0, BEAR_BASE[tk_bond]/100.0, (BULL_BASE[tk_bond]/100.0) * mult_bond_gold)
+tgt_weights_df[tk_gold] = np.where(df_all['Regime'] == 0, BEAR_BASE[tk_gold]/100.0, (BULL_BASE[tk_gold]/100.0) * mult_bond_gold)
+tgt_weights_df[tk_usd]  = np.where(df_all['Regime'] == 0, BEAR_BASE[tk_usd]/100.0,  (BULL_BASE[tk_usd]/100.0) * mult_usd)
 
-w_safe_tgt = np.maximum(0, 100.0 - (w_core_tgt + w_lev_tgt + w_bond_tgt + w_gold_tgt + w_usd_tgt))
+# 槓桿部位 (使用 Pandas 原生的 case/when 邏輯，避免 numpy 造成的長度問題)
+tgt_weights_df[tk_lev] = 0.0
+tgt_weights_df.loc[df_all['Regime'] == 1,  tk_lev] = (BULL_BASE[tk_lev]/100.0) * mult_core_lev
+tgt_weights_df.loc[df_all['Regime'] == 19, tk_lev] = 0.15 * mult_core_lev
+tgt_weights_df.loc[df_all['Regime'] == 30, tk_lev] = 0.25 * mult_core_lev
 
-# 直接將一維 Numpy Array 封裝成 DataFrame，避免 Index 衝突
-tgt_weights_df = pd.DataFrame({
-    tk_core: w_core_tgt / 100.0,
-    tk_lev: w_lev_tgt / 100.0,
-    tk_bond: w_bond_tgt / 100.0,
-    tk_gold: w_gold_tgt / 100.0,
-    tk_usd: w_usd_tgt / 100.0,
-    tk_safe: w_safe_tgt / 100.0
-}, index=df_all.index)
+# 流動性海綿池
+tgt_weights_df[tk_safe] = np.maximum(0, 1.0 - tgt_weights_df[[tk_core, tk_lev, tk_bond, tk_gold, tk_usd]].sum(axis=1))
 
 targets = (tgt_weights_df.loc[df_all.index[-1]] * 100).to_dict()
 
@@ -499,4 +493,4 @@ with st.expander("🔍 歷史回撤與觸發除錯檢視 (Data Inspector)"):
         st.write("資料不齊全，無法顯示除錯表。")
 
 # 標示版本號 (放置於頁尾)
-st.markdown('<div class="version-footer">Powered by Pure Alpha Quantitative Engine | Version 8.8.4 (Stable Array Build)</div>', unsafe_allow_html=True)
+st.markdown('<div class="version-footer">Powered by Pure Alpha Quantitative Engine | Version 8.8.5 (Pandas Alignment Build)</div>', unsafe_allow_html=True)
