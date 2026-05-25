@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 # ==========================================
 # 0. 網頁基礎設定與終極 CSS
 # ==========================================
-st.set_page_config(page_title="Pure Alpha 戰情室 V8.8 (SPX 真實指數版)", layout="wide")
+st.set_page_config(page_title="Pure Alpha 戰情室 V8.8 (真實觸價版)", layout="wide")
 
 custom_css = """
 <style>
@@ -40,7 +40,7 @@ custom_css = """
 st.markdown(custom_css, unsafe_allow_html=True)
 
 # ==========================================
-# 1. 核心參數與資料下載 (外掛 SPX 暴力抓取)
+# 1. 核心參數與資料下載 (加入 High/Low 提取)
 # ==========================================
 PRICE_COLS = ["QQQ", "QLD", "TLT", "GLD", "UUP", "SGOV", "SPY"]
 CURRENT_WEIGHTS = {"QQQ": 28.71, "QLD": 35.66, "TLT": 7.80, "GLD": 7.65, "UUP": 8.00, "SGOV": 12.18}
@@ -52,25 +52,27 @@ CHART_COLORS = {"QQQ": "#38bdf8", "QLD": "#818cf8", "TLT": "#f472b6", "GLD": "#f
 @st.cache_data(ttl=3600)
 def load_data():
     data_dict = {}
-    # 1. 先抓取一般 ETF
+    # 1. 抓取一般 ETF
     for t in PRICE_COLS:
         try:
             df = yf.download(t, period="10y", progress=False)
-            if 'Close' in df.columns:
-                series = df['Close'].dropna()
-                if isinstance(series, pd.DataFrame): series = series.iloc[:, 0]
-                data_dict[t] = series
+            if not df.empty and 'Close' in df.columns:
+                data_dict[t] = df['Close'].iloc[:, 0] if isinstance(df['Close'], pd.DataFrame) else df['Close']
+                # 備用：把 SPY 的 High 和 Low 也抓下來
+                if t == "SPY":
+                    data_dict["SPY_High"] = df['High'].iloc[:, 0] if isinstance(df['High'], pd.DataFrame) else df['High']
+                    data_dict["SPY_Low"] = df['Low'].iloc[:, 0] if isinstance(df['Low'], pd.DataFrame) else df['Low']
         except Exception: pass
     
-    # 2. 針對 SPX 進行獨立強制抓取 (最多嘗試 3 次，破解 Yahoo 阻擋)
+    # 2. 強制獨立抓取 SPX 真實指數 (包含 High/Low)
     for _ in range(3):
         try:
             spx_df = yf.download("^GSPC", period="10y", progress=False)
-            if 'Close' in spx_df.columns:
-                series = spx_df['Close'].dropna()
-                if isinstance(series, pd.DataFrame): series = series.iloc[:, 0]
-                data_dict["^GSPC"] = series
-                break # 成功抓到就跳出迴圈
+            if not spx_df.empty and 'Close' in spx_df.columns:
+                data_dict["^GSPC"] = spx_df['Close'].iloc[:, 0] if isinstance(spx_df['Close'], pd.DataFrame) else spx_df['Close']
+                data_dict["SPX_High"] = spx_df['High'].iloc[:, 0] if isinstance(spx_df['High'], pd.DataFrame) else spx_df['High']
+                data_dict["SPX_Low"] = spx_df['Low'].iloc[:, 0] if isinstance(spx_df['Low'], pd.DataFrame) else spx_df['Low']
+                break
         except Exception:
             time.sleep(0.5)
 
@@ -79,14 +81,15 @@ def load_data():
 
 df_all = load_data()
 
-# 動態判定要用真實指數還是備用 ETF
+# 判定大盤基準與高低點欄位
 spx_col = '^GSPC' if '^GSPC' in df_all.columns else 'SPY'
-if spx_col == 'SPY':
-    st.sidebar.warning("⚠️ Yahoo API 目前阻擋了 SPX 真實指數，系統已自動降級使用 SPY 計算回撤，請留意微小誤差。")
+if spx_col == '^GSPC':
+    h_col, l_col = 'SPX_High', 'SPX_Low'
+    st.sidebar.success("✅ 成功對接 SPX 盤中真實數據，抄底門檻精準觸發！")
 else:
-    st.sidebar.success("✅ 成功獲取 SPX (^GSPC) 真實指數，抄底門檻精準對位！")
+    h_col, l_col = 'SPY_High', 'SPY_Low'
+    st.sidebar.warning("⚠️ Yahoo API 阻擋，降級使用 SPY 盤中數據計算回撤。")
 
-# 確保畫圖時需要的欄位存在
 CHART_PRICE_COLS = [c for c in PRICE_COLS if c in df_all.columns]
 
 # ==========================================
@@ -102,9 +105,8 @@ k_value = st.sidebar.slider("動態縮放 K 值", 0.500, 1.500, 1.137, step=0.00
 threshold = st.sidebar.slider("最小換倉門檻 (%)", 0.5, 5.0, 2.0, step=0.1)
 
 st.sidebar.markdown("<h3 style='color:#facc15;'>左側抄底門檻設定</h3>", unsafe_allow_html=True)
-# 完美回歸你的真實直覺：19.0% 與 30.0%
-dip_lv1 = st.sidebar.slider("Lv1 抄底門檻 (%)", 10.0, 25.0, 19.0, step=0.1)
-dip_lv2 = st.sidebar.slider("Lv2 恐慌門檻 (%)", 20.0, 40.0, 30.0, step=0.1)
+dip_lv1 = st.sidebar.slider("Lv1 抄底門檻 (%)", 10.0, 25.0, 19.0, step=0.1) # 完美回歸 19.0%
+dip_lv2 = st.sidebar.slider("Lv2 恐慌門檻 (%)", 20.0, 40.0, 30.0, step=0.1) # 完美回歸 30.0%
 
 bench_choice = st.sidebar.selectbox("對標基準", ["QQQ", "SPY"])
 window_choice = st.sidebar.selectbox("滾動週期", [21, 63, 126], index=0)
@@ -113,12 +115,13 @@ dip_lv1_frac = dip_lv1 / 100.0
 dip_lv2_frac = dip_lv2 / 100.0
 
 # ==========================================
-# 3. 雙門檻 + 階梯抄底記憶狀態機
+# 3. 雙門檻 + 盤中觸價狀態機 (Intraday Trigger)
 # ==========================================
 df_all['MA200'] = df_all['QQQ'].rolling(200).mean()
-# 這裡會優先使用 ^GSPC 算回撤
-df_all['SPX_Max'] = df_all[spx_col].cummax()
-df_all['SPX_DD'] = df_all[spx_col] / df_all['SPX_Max'] - 1
+
+# 關鍵升級：計算真實回撤 (Intraday Low / Historical Intraday High - 1)
+df_all['SPX_Max'] = df_all[h_col].cummax()
+df_all['SPX_DD'] = df_all[l_col] / df_all['SPX_Max'] - 1
 
 regime_states = []
 current_state = 1 
@@ -126,12 +129,13 @@ current_state = 1
 for i in range(len(df_all)):
     q = df_all['QQQ'].iloc[i]
     ma = df_all['MA200'].iloc[i]
-    spx_dd = df_all['SPX_DD'].iloc[i]
+    spx_dd = df_all['SPX_DD'].iloc[i] 
     
     if pd.isna(ma):
         regime_states.append(1)
         continue
     
+    # 防禦突破看收盤，但抄底看盤中 Low 跌幅
     if q >= ma * 1.04:
         current_state = 1
     elif spx_dd <= -dip_lv2_frac:
@@ -173,18 +177,18 @@ current_spx_dd = df_all['SPX_DD'].iloc[-1] if not df_all.empty else 0.0
 last_state = df_all['Regime'].iloc[-2] if len(df_all) > 1 else 1
 
 if last_state == 1:
-    if current_spx_dd <= -dip_lv2_frac: regime_text, r_class = f"極度恐慌抄底鎖定 ({spx_col} DD > {dip_lv2}%)", "dip-box"
-    elif current_spx_dd <= -dip_lv1_frac: regime_text, r_class = f"左側抄底鎖定 ({spx_col} DD > {dip_lv1}%)", "dip-box"
+    if current_spx_dd <= -dip_lv2_frac: regime_text, r_class = f"極度恐慌抄底鎖定 (DD > {dip_lv2}%)", "dip-box"
+    elif current_spx_dd <= -dip_lv1_frac: regime_text, r_class = f"左側抄底鎖定 (DD > {dip_lv1}%)", "dip-box"
     elif sim_qqq < sim_ma200 * 0.97: regime_text, r_class = "熊市冬眠啟動 (跌破 0.97)", "bear-box"
     else: regime_text, r_class = "核心進攻模式", "bull-box"
 elif last_state == 0:
     if sim_qqq >= sim_ma200 * 1.04: regime_text, r_class = "重返牛市 (強勢突破 1.04)", "bull-box"
-    elif current_spx_dd <= -dip_lv2_frac: regime_text, r_class = f"極度恐慌抄底鎖定 ({spx_col} DD > {dip_lv2}%)", "dip-box"
-    elif current_spx_dd <= -dip_lv1_frac: regime_text, r_class = f"左側抄底鎖定 ({spx_col} DD > {dip_lv1}%)", "dip-box"
+    elif current_spx_dd <= -dip_lv2_frac: regime_text, r_class = f"極度恐慌抄底鎖定 (DD > {dip_lv2}%)", "dip-box"
+    elif current_spx_dd <= -dip_lv1_frac: regime_text, r_class = f"左側抄底鎖定 (DD > {dip_lv1}%)", "dip-box"
     else: regime_text, r_class = "熊市冬眠中 (等待突破 1.04)", "bear-box"
 else:
     if sim_qqq >= sim_ma200 * 1.04: regime_text, r_class = "抄底成功！重返滿血牛市", "bull-box"
-    elif current_spx_dd <= -dip_lv2_frac: regime_text, r_class = f"極度恐慌抄底鎖定 ({spx_col} DD > {dip_lv2}%)", "dip-box"
+    elif current_spx_dd <= -dip_lv2_frac: regime_text, r_class = f"極度恐慌抄底鎖定 (DD > {dip_lv2}%)", "dip-box"
     else: regime_text, r_class = "左側抄底建倉鎖定中 (等待牛市訊號)", "dip-box"
 
 ratio = sim_qqq / sim_ma200 if sim_ma200 > 0 else 1.0
@@ -202,7 +206,7 @@ with col1:
         <h2>市場 Regime Engine ({spx_col} 聯動)</h2>
         <div class="metric-row"><span class="m-label">QQQ 當前價格</span><span class="m-value c-yellow">{sim_qqq:.2f}</span></div>
         <div class="metric-row"><span class="m-label">QQQ MA200 均線</span><span class="m-value">{sim_ma200:.2f}</span></div>
-        <div class="metric-row"><span class="m-label">{spx_col} 真實回撤</span><span class="m-value c-yellow">{spx_dd_html}</span></div>
+        <div class="metric-row"><span class="m-label">盤中真實最大回撤</span><span class="m-value c-yellow">{spx_dd_html}</span></div>
         <div class="metric-row"><span class="m-label">趨勢強弱比值 (Ratio)</span><span class="m-value c-green">{ratio:.3f}</span></div>
         <div class="regime-box {r_class}">{regime_text}</div>
     </div>
