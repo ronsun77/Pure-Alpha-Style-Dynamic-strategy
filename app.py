@@ -151,18 +151,18 @@ dip_lv1_frac = dip_lv1 / 100.0
 dip_lv2_frac = dip_lv2 / 100.0
 
 # ==========================================
-# 4. 雙門檻 + 盤中觸價狀態機 (Pandas 原生運算)
+# 4. 雙門檻 + 盤中觸價狀態機 (純 Numpy 陣列運算版)
 # ==========================================
 df_all['MA200'] = df_all[tk_core].rolling(200).mean()
 df_all['SPX_Max'] = df_all[h_col].cummax()
 df_all['SPX_DD'] = df_all[l_col] / df_all['SPX_Max'] - 1
 
-regime_states = []
-current_state = 1 
-
 qqq_vals = df_all[tk_core].values
 ma200_vals = df_all['MA200'].values
 spx_dd_vals = df_all['SPX_DD'].values
+
+regime_states = np.ones(len(df_all), dtype=int)
+current_state = 1 
 
 for i in range(len(df_all)):
     q = qqq_vals[i]
@@ -170,7 +170,7 @@ for i in range(len(df_all)):
     spx_dd = spx_dd_vals[i]
     
     if pd.isna(ma):
-        regime_states.append(1)
+        regime_states[i] = 1
         continue
     
     if q >= ma * 1.04:
@@ -182,7 +182,7 @@ for i in range(len(df_all)):
     elif current_state == 1 and q < ma * 0.97 and spx_dd > -dip_lv1_frac:
         current_state = 0
         
-    regime_states.append(current_state)
+    regime_states[i] = current_state
 
 df_all['Regime'] = regime_states
 
@@ -190,18 +190,30 @@ mult_core_lev = k_value
 mult_bond_gold = 1.0 + (k_value - 1) * 0.525
 mult_usd = 2.0 - k_value
 
-tgt_weights_df = pd.DataFrame(index=df_all.index)
-tgt_weights_df[tk_core] = np.where(df_all['Regime'] == 0, BEAR_BASE[tk_core]/100.0, (BULL_BASE[tk_core]/100.0) * mult_core_lev)
-tgt_weights_df[tk_bond] = np.where(df_all['Regime'] == 0, BEAR_BASE[tk_bond]/100.0, (BULL_BASE[tk_bond]/100.0) * mult_bond_gold)
-tgt_weights_df[tk_gold] = np.where(df_all['Regime'] == 0, BEAR_BASE[tk_gold]/100.0, (BULL_BASE[tk_gold]/100.0) * mult_bond_gold)
-tgt_weights_df[tk_usd]  = np.where(df_all['Regime'] == 0, BEAR_BASE[tk_usd]/100.0,  (BULL_BASE[tk_usd]/100.0) * mult_usd)
+# 全部使用 np.where 產生一維陣列，保證長度絕對一致
+w_core_tgt = np.where(regime_states == 0, BEAR_BASE[tk_core]/100.0, (BULL_BASE[tk_core]/100.0) * mult_core_lev)
+w_bond_tgt = np.where(regime_states == 0, BEAR_BASE[tk_bond]/100.0, (BULL_BASE[tk_bond]/100.0) * mult_bond_gold)
+w_gold_tgt = np.where(regime_states == 0, BEAR_BASE[tk_gold]/100.0, (BULL_BASE[tk_gold]/100.0) * mult_bond_gold)
+w_usd_tgt = np.where(regime_states == 0, BEAR_BASE[tk_usd]/100.0,  (BULL_BASE[tk_usd]/100.0) * mult_usd)
 
-tgt_weights_df[tk_lev] = 0.0
-tgt_weights_df.loc[df_all['Regime'] == 1,  tk_lev] = (BULL_BASE[tk_lev]/100.0) * mult_core_lev
-tgt_weights_df.loc[df_all['Regime'] == 19, tk_lev] = 0.15 * mult_core_lev
-tgt_weights_df.loc[df_all['Regime'] == 30, tk_lev] = 0.25 * mult_core_lev
+w_lev_tgt = np.zeros(len(df_all))
+w_lev_tgt = np.where(regime_states == 1, (BULL_BASE[tk_lev]/100.0) * mult_core_lev, w_lev_tgt)
+w_lev_tgt = np.where(regime_states == 19, 0.15 * mult_core_lev, w_lev_tgt)
+w_lev_tgt = np.where(regime_states == 30, 0.25 * mult_core_lev, w_lev_tgt)
 
-tgt_weights_df[tk_safe] = np.maximum(0, 1.0 - tgt_weights_df[[tk_core, tk_lev, tk_bond, tk_gold, tk_usd]].sum(axis=1))
+# 計算安全部位
+sum_others = w_core_tgt + w_lev_tgt + w_bond_tgt + w_gold_tgt + w_usd_tgt
+w_safe_tgt = np.maximum(0, 1.0 - sum_others)
+
+# 統一組裝成 DataFrame
+tgt_weights_df = pd.DataFrame({
+    tk_core: w_core_tgt,
+    tk_lev: w_lev_tgt,
+    tk_bond: w_bond_tgt,
+    tk_gold: w_gold_tgt,
+    tk_usd: w_usd_tgt,
+    tk_safe: w_safe_tgt
+}, index=df_all.index)
 
 targets = (tgt_weights_df.loc[df_all.index[-1]] * 100).to_dict()
 
@@ -255,7 +267,6 @@ with col2:
         
         bench_ret = df_all[bench_choice].pct_change().tail(window_choice).dropna()
         if not recent_ret.empty and not bench_ret.empty and len(recent_ret) == len(bench_ret):
-            # 極致穩定 Beta 計算方式
             p_ret_series = recent_ret.dot(w_array).values
             b_ret_series = bench_ret.values
             cov_val = np.cov(p_ret_series, b_ret_series)[0, 1]
@@ -330,7 +341,10 @@ with col_beta:
     st.markdown(f"<h2 style='color: #38bdf8; font-size: 18px; border-left: 4px solid #38bdf8; padding-left: 10px; margin-bottom: 10px;'>動態 Beta 趨勢 (即時還原真實歷史軌跡)</h2>", unsafe_allow_html=True)
     
     if len(AVAILABLE_ASSETS) > 0 and bench_choice in df_all.columns:
-        ret_all = df_all[AVAILABLE_ASSETS + [bench_choice]].pct_change().dropna()
+        # 確保提取時不會有重複的欄位
+        cols_to_extract = list(set(AVAILABLE_ASSETS + [bench_choice]))
+        ret_all = df_all[cols_to_extract].pct_change().dropna()
+        
         roll_cov = ret_all[AVAILABLE_ASSETS].rolling(window=window_choice).cov(ret_all[bench_choice])
         roll_var = ret_all[bench_choice].rolling(window=window_choice).var()
         roll_beta = roll_cov.div(roll_var, axis=0).dropna().tail(504)
@@ -356,7 +370,7 @@ st.markdown("---")
 st.markdown("<h2 style='color: #38bdf8; font-size: 22px; border-left: 5px solid #38bdf8; padding-left: 10px; margin-bottom: 20px;'>歷史回測與分析引擎 (Path-Dependent Rebalance)</h2>", unsafe_allow_html=True)
 
 valid_assets_for_inception = [a for a in PORTFOLIO_ASSETS if a in df_all.columns]
-valid_cols_for_inception = valid_assets_for_inception + ([bench_choice] if bench_choice in df_all.columns else [])
+valid_cols_for_inception = list(set(valid_assets_for_inception + ([bench_choice] if bench_choice in df_all.columns else [])))
 latest_inception_date = inception_dates[valid_cols_for_inception].max()
 
 strict_inception = st.checkbox(f"🛡️ 將回測起始日對齊最晚發行資產的掛牌日 ({latest_inception_date.date()})，避免早期填補數據造成失真", value=True)
@@ -372,7 +386,7 @@ bt_mask = (df_all.index.date >= start_date) & (df_all.index.date <= end_date)
 bt_df = df_all.loc[bt_mask]
 
 valid_assets = [a for a in PORTFOLIO_ASSETS if a in bt_df.columns]
-valid_cols = valid_assets + [bench_choice] if bench_choice in bt_df.columns else valid_assets
+valid_cols = list(set(valid_assets + ([bench_choice] if bench_choice in bt_df.columns else [])))
 
 if len(bt_df) > 10 and len(valid_assets) > 0 and bench_choice in bt_df.columns:
     bt_ret = bt_df[valid_cols].pct_change().dropna()
@@ -424,7 +438,6 @@ if len(bt_df) > 10 and len(valid_assets) > 0 and bench_choice in bt_df.columns:
     sharpe = (cagr - 0.04) / bt_vol if bt_vol > 0 else 0
     bench_sharpe = (bench_cagr - 0.04) / bench_vol if bench_vol > 0 else 0
     
-    # 使用 Numpy 計算，確保無論何種狀況都是 float
     p_series = port_daily_ret_series.values
     b_series = bt_ret[bench_choice].values
     if len(p_series) == len(b_series) and len(p_series) > 1:
@@ -508,4 +521,4 @@ with st.expander("🔍 歷史回撤與觸發除錯檢視 (Data Inspector)"):
         st.write("資料不齊全，無法顯示除錯表。")
 
 # 標示版本號 (放置於頁尾)
-st.markdown('<div class="version-footer">Powered by Pure Alpha Quantitative Engine | Version 8.8.7 (Beta Robust Build)</div>', unsafe_allow_html=True)
+st.markdown('<div class="version-footer">Powered by Pure Alpha Quantitative Engine | Version 8.8.8 (Ultimate Stable Build)</div>', unsafe_allow_html=True)
