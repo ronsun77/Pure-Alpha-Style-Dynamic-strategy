@@ -61,7 +61,7 @@ ASSET_ROLES = {tk_core: "核心成長引擎", tk_lev: "動能槓桿放大", tk_b
 CHART_COLORS = {tk_core: "#38bdf8", tk_lev: "#818cf8", tk_bond: "#f472b6", tk_gold: "#facc15", tk_usd: "#ef4444", tk_safe: "#94a3b8"}
 
 # ==========================================
-# 2. 核心資料下載引擎 (保留原始 NaN 以擷取發行日)
+# 2. 核心資料下載引擎
 # ==========================================
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_data(tickers_tuple):
@@ -92,7 +92,6 @@ def load_data(tickers_tuple):
             time.sleep(1)
 
     if data_dict: 
-        # 這裡不填補 NaN，保留真實資料邊界
         return pd.concat(data_dict, axis=1)
     return pd.DataFrame()
 
@@ -123,10 +122,7 @@ else:
 AVAILABLE_ASSETS = [c for c in PORTFOLIO_ASSETS if c in raw_df_all.columns]
 CHART_PRICE_COLS = AVAILABLE_ASSETS
 
-# 紀錄所有資產的真實發行日，供回測引擎判斷
 inception_dates = raw_df_all.apply(lambda x: x.first_valid_index())
-
-# 供後續狀態機運算使用的完整填補表
 df_all = raw_df_all.ffill().bfill()
 
 # ==========================================
@@ -163,10 +159,15 @@ df_all['SPX_DD'] = df_all[l_col] / df_all['SPX_Max'] - 1
 regime_states = []
 current_state = 1 
 
+# 加速狀態機計算
+qqq_vals = df_all[tk_core].values
+ma200_vals = df_all['MA200'].values
+spx_dd_vals = df_all['SPX_DD'].values
+
 for i in range(len(df_all)):
-    q = df_all[tk_core].iloc[i]
-    ma = df_all['MA200'].iloc[i]
-    spx_dd = df_all['SPX_DD'].iloc[i] 
+    q = qqq_vals[i]
+    ma = ma200_vals[i]
+    spx_dd = spx_dd_vals[i]
     
     if pd.isna(ma):
         regime_states.append(1)
@@ -189,24 +190,28 @@ mult_core_lev = k_value
 mult_bond_gold = 1.0 + (k_value - 1) * 0.525
 mult_usd = 2.0 - k_value
 
-w_core_tgt = np.where(df_all['Regime'] == 0, BEAR_BASE[tk_core], BULL_BASE[tk_core] * mult_core_lev)
-w_bond_tgt = np.where(df_all['Regime'] == 0, BEAR_BASE[tk_bond], BULL_BASE[tk_bond] * mult_bond_gold)
-w_gold_tgt = np.where(df_all['Regime'] == 0, BEAR_BASE[tk_gold], BULL_BASE[tk_gold] * mult_bond_gold)
-w_usd_tgt = np.where(df_all['Regime'] == 0, BEAR_BASE[tk_usd], BULL_BASE[tk_usd] * mult_usd)
+# 使用 .values 確保產生的是乾淨的 Numpy Array，避免 DataFrame 賦值時報錯
+regime_arr = df_all['Regime'].values
+w_core_tgt = np.where(regime_arr == 0, BEAR_BASE[tk_core], BULL_BASE[tk_core] * mult_core_lev)
+w_bond_tgt = np.where(regime_arr == 0, BEAR_BASE[tk_bond], BULL_BASE[tk_bond] * mult_bond_gold)
+w_gold_tgt = np.where(regime_arr == 0, BEAR_BASE[tk_gold], BULL_BASE[tk_gold] * mult_bond_gold)
+w_usd_tgt = np.where(regime_arr == 0, BEAR_BASE[tk_usd], BULL_BASE[tk_usd] * mult_usd)
 
-condlist = [df_all['Regime'] == 30, df_all['Regime'] == 19, df_all['Regime'] == 1]
+condlist = [regime_arr == 30, regime_arr == 19, regime_arr == 1]
 choicelist = [25.0 * mult_core_lev, 15.0 * mult_core_lev, BULL_BASE[tk_lev] * mult_core_lev]
 w_lev_tgt = np.select(condlist, choicelist, default=0.0)
 
 w_safe_tgt = np.maximum(0, 100.0 - (w_core_tgt + w_lev_tgt + w_bond_tgt + w_gold_tgt + w_usd_tgt))
 
-tgt_weights_df = pd.DataFrame(index=df_all.index)
-tgt_weights_df[tk_core] = w_core_tgt / 100.0
-tgt_weights_df[tk_lev] = w_lev_tgt / 100.0
-tgt_weights_df[tk_bond] = w_bond_tgt / 100.0
-tgt_weights_df[tk_gold] = w_gold_tgt / 100.0
-tgt_weights_df[tk_usd] = w_usd_tgt / 100.0
-tgt_weights_df[tk_safe] = w_safe_tgt / 100.0
+# 直接將一維 Numpy Array 封裝成 DataFrame，避免 Index 衝突
+tgt_weights_df = pd.DataFrame({
+    tk_core: w_core_tgt / 100.0,
+    tk_lev: w_lev_tgt / 100.0,
+    tk_bond: w_bond_tgt / 100.0,
+    tk_gold: w_gold_tgt / 100.0,
+    tk_usd: w_usd_tgt / 100.0,
+    tk_safe: w_safe_tgt / 100.0
+}, index=df_all.index)
 
 targets = (tgt_weights_df.loc[df_all.index[-1]] * 100).to_dict()
 
@@ -347,12 +352,10 @@ st.markdown("---")
 # ==========================================
 st.markdown("<h2 style='color: #38bdf8; font-size: 22px; border-left: 5px solid #38bdf8; padding-left: 10px; margin-bottom: 20px;'>歷史回測與分析引擎 (Path-Dependent Rebalance)</h2>", unsafe_allow_html=True)
 
-# 動態判定最晚的掛牌日
 valid_assets_for_inception = [a for a in PORTFOLIO_ASSETS if a in df_all.columns]
 valid_cols_for_inception = valid_assets_for_inception + ([bench_choice] if bench_choice in df_all.columns else [])
 latest_inception_date = inception_dates[valid_cols_for_inception].max()
 
-# 新增勾選框，讓使用者決定是否要用嚴格日期限制
 strict_inception = st.checkbox(f"🛡️ 將回測起始日對齊最晚發行資產的掛牌日 ({latest_inception_date.date()})，避免早期填補數據造成失真", value=True)
 
 base_min_date = df_all.index.min().date()
@@ -369,7 +372,6 @@ valid_assets = [a for a in PORTFOLIO_ASSETS if a in bt_df.columns]
 valid_cols = valid_assets + [bench_choice] if bench_choice in bt_df.columns else valid_assets
 
 if len(bt_df) > 10 and len(valid_assets) > 0 and bench_choice in bt_df.columns:
-    # 回測引擎：這裡的 bt_df 已經是被 ffill().bfill() 處理過的安全數據
     bt_ret = bt_df[valid_cols].pct_change().dropna()
     tgt_weights_sub = tgt_weights_df.loc[bt_ret.index]
     
@@ -497,4 +499,4 @@ with st.expander("🔍 歷史回撤與觸發除錯檢視 (Data Inspector)"):
         st.write("資料不齊全，無法顯示除錯表。")
 
 # 標示版本號 (放置於頁尾)
-st.markdown('<div class="version-footer">Powered by Pure Alpha Quantitative Engine | Version 8.8.3 (Dynamic Inception Date)</div>', unsafe_allow_html=True)
+st.markdown('<div class="version-footer">Powered by Pure Alpha Quantitative Engine | Version 8.8.4 (Stable Array Build)</div>', unsafe_allow_html=True)
