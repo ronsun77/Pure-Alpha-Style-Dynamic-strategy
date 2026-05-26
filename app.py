@@ -54,16 +54,13 @@ with st.sidebar.expander("⚙️ 自訂資產代碼 (ETF Tickers)", expanded=Fal
 
 PORTFOLIO_ASSETS = [tk_core, tk_lev, tk_bond, tk_gold, tk_usd, tk_safe]
 
-# 將寫死的權重改名為「基準日錨定權重 (Anchor Weights)」
-ANCHOR_WEIGHTS = {tk_core: 28.71, tk_lev: 35.66, tk_bond: 7.80, tk_gold: 7.65, tk_usd: 8.00, tk_safe: 12.18}
-
 BULL_BASE = {tk_core: 26.0, tk_lev: 32.0, tk_bond: 7.0, tk_gold: 7.0, tk_usd: 9.0}
 BEAR_BASE = {tk_core: 20.0, tk_lev: 20.0, tk_bond: 10.0, tk_gold: 10.0, tk_usd: 20.0}
 ASSET_ROLES = {tk_core: "核心成長引擎", tk_lev: "動能槓桿放大", tk_bond: "長債負相關避險", tk_gold: "抗通膨終極防禦", tk_usd: "美元流動性避險", tk_safe: "流動性海綿池"}
 CHART_COLORS = {tk_core: "#38bdf8", tk_lev: "#818cf8", tk_bond: "#f472b6", tk_gold: "#facc15", tk_usd: "#ef4444", tk_safe: "#94a3b8"}
 
 # ==========================================
-# 2. 核心資料下載引擎 
+# 2. 核心資料下載引擎 (強制還原權息 Adj Close)
 # ==========================================
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_data(tickers_tuple):
@@ -72,8 +69,12 @@ def load_data(tickers_tuple):
         try:
             for _ in range(3):
                 df = yf.download(t, period="max", progress=False)
-                if not df.empty and 'Close' in df.columns:
-                    data_dict[t] = df['Close'].iloc[:, 0] if isinstance(df['Close'], pd.DataFrame) else df['Close']
+                if not df.empty:
+                    # 強制使用 Adj Close，解決債券與現金配息導致的價格虛假縮水問題
+                    close_col = 'Adj Close' if 'Adj Close' in df.columns else 'Close'
+                    if close_col in df.columns:
+                        data_dict[t] = df[close_col].iloc[:, 0] if isinstance(df[close_col], pd.DataFrame) else df[close_col]
+                    
                     if t == "SPY":
                         data_dict["SPY_High"] = df['High'].iloc[:, 0] if isinstance(df['High'], pd.DataFrame) else df['High']
                         data_dict["SPY_Low"] = df['Low'].iloc[:, 0] if isinstance(df['Low'], pd.DataFrame) else df['Low']
@@ -85,8 +86,10 @@ def load_data(tickers_tuple):
     for _ in range(3):
         try:
             spx_df = yf.download("^GSPC", period="max", progress=False)
-            if not spx_df.empty and 'Close' in spx_df.columns:
-                data_dict["^GSPC"] = spx_df['Close'].iloc[:, 0] if isinstance(spx_df['Close'], pd.DataFrame) else spx_df['Close']
+            if not spx_df.empty:
+                close_col = 'Adj Close' if 'Adj Close' in spx_df.columns else 'Close'
+                if close_col in spx_df.columns:
+                    data_dict["^GSPC"] = spx_df[close_col].iloc[:, 0] if isinstance(spx_df[close_col], pd.DataFrame) else spx_df[close_col]
                 data_dict["SPX_High"] = spx_df['High'].iloc[:, 0] if isinstance(spx_df['High'], pd.DataFrame) else spx_df['High']
                 data_dict["SPX_Low"] = spx_df['Low'].iloc[:, 0] if isinstance(spx_df['Low'], pd.DataFrame) else spx_df['Low']
                 break
@@ -128,15 +131,31 @@ inception_dates = raw_df_all.apply(lambda x: x.first_valid_index())
 df_all = raw_df_all.ffill().bfill()
 
 # ==========================================
-# 3. 滑桿參數提取
+# 3. 滑桿參數與 UI 提取
 # ==========================================
 latest_core = float(df_all[tk_core].iloc[-1])
 computed_ma200 = float(df_all[tk_core].rolling(200).mean().iloc[-1]) if len(df_all) >= 200 else latest_core
 
-# 新增：動態實倉錨定日設定
-st.sidebar.markdown("<h3 style='color:#38bdf8; margin-top:15px;'>📅 動態實倉基準設定</h3>", unsafe_allow_html=True)
-anchor_date = st.sidebar.date_input("實倉錨定日 (起始點)", datetime.date(2026, 2, 24))
+# ---------------------------------------------------------
+# 開放使用者自行輸入錨定權重
+# ---------------------------------------------------------
+st.sidebar.markdown("<h3 style='color:#38bdf8; margin-top:15px;'>📅 實倉錨定基準設定</h3>", unsafe_allow_html=True)
+# 預設基準日更新為 2026/5/24
+anchor_date = st.sidebar.date_input("實倉錨定日 (起始點)", datetime.date(2026, 5, 24))
 
+st.sidebar.markdown("<div style='color:#cbd5e1; font-size:13px; margin-bottom:10px;'>請輸入你在該日期的真實持倉比例(%)：</div>", unsafe_allow_html=True)
+col_w1, col_w2 = st.sidebar.columns(2)
+aw_core = col_w1.number_input(f"{tk_core}", value=28.71, step=0.1)
+aw_lev  = col_w2.number_input(f"{tk_lev}", value=35.66, step=0.1)
+aw_bond = col_w1.number_input(f"{tk_bond}", value=7.80, step=0.1)
+aw_gold = col_w2.number_input(f"{tk_gold}", value=7.65, step=0.1)
+aw_usd  = col_w1.number_input(f"{tk_usd}", value=8.00, step=0.1)
+aw_safe = col_w2.number_input(f"{tk_safe}", value=12.18, step=0.1)
+
+# 把使用者輸入的權重存成錨定起點
+ANCHOR_WEIGHTS = {tk_core: aw_core, tk_lev: aw_lev, tk_bond: aw_bond, tk_gold: aw_gold, tk_usd: aw_usd, tk_safe: aw_safe}
+
+st.sidebar.markdown("---")
 sim_core = st.sidebar.slider(f"{tk_core} 模擬/現價", 100.0, 900.0, latest_core, step=0.01)
 sim_ma200 = st.sidebar.slider(f"{tk_core} MA200 基準線", 100.0, 800.0, computed_ma200, step=0.01)
 k_value = st.sidebar.slider("動態縮放 K 值", 0.500, 1.500, 1.137, step=0.001)
@@ -162,7 +181,7 @@ dip_lv1_frac = dip_lv1 / 100.0
 dip_lv2_frac = dip_lv2 / 100.0
 
 # ==========================================
-# 4. 雙門檻 + 盤中觸價狀態機
+# 4. 雙門檻 + 盤中觸價狀態機 (Pandas 原生運算)
 # ==========================================
 df_all['MA200'] = df_all[tk_core].rolling(200).mean()
 df_all['SPX_Max'] = df_all[h_col].cummax()
@@ -217,29 +236,35 @@ tgt_weights_df[tk_safe] = np.maximum(0, 1.0 - tgt_weights_df[[tk_core, tk_lev, t
 targets = (tgt_weights_df.loc[df_all.index[-1]] * 100).to_dict()
 
 # ---------------------------------------------------------
-# 動態實倉漂移引擎 (基於特定基準日的真實漲跌漂移)
+# 動態實倉漂移引擎 (首尾價格比例法，無累積誤差)
 # ---------------------------------------------------------
 drift_mask = df_all.index.date >= anchor_date
 drift_df = df_all.loc[drift_mask, AVAILABLE_ASSETS]
 
-if len(drift_df) > 1:
-    drift_ret = drift_df.pct_change().dropna().values
+if not drift_df.empty:
+    # 取得錨定基準日當天的價格
+    p0 = drift_df.iloc[0].values
+    # 取得最新收盤的價格
+    pt = drift_df.iloc[-1].values
     
-    # 提取我們輸入的 2026/2/24 原始實倉權重作為基準起點
-    current_w = np.array([ANCHOR_WEIGHTS.get(a, 0) / 100.0 for a in AVAILABLE_ASSETS])
+    # 原始輸入的權重
+    w0 = np.array([ANCHOR_WEIGHTS.get(a, 0) / 100.0 for a in AVAILABLE_ASSETS])
     
-    # 【關鍵修改】：這裡我們「不」進行自動再平衡！
-    # 這樣漂移才會真實累積，UI 上才能顯現出超過 2% 的差距，並亮起 BUY/SELL 燈號。
-    for i in range(len(drift_ret)):
-        day_ret = drift_ret[i]
-        daily_p_ret = np.dot(current_w, day_ret)
-        
-        if (1 + daily_p_ret) != 0:
-            current_w = current_w * (1 + day_ret) / (1 + daily_p_ret)
-            
-    CURRENT_WEIGHTS = {asset: current_w[idx] * 100 for idx, asset in enumerate(AVAILABLE_ASSETS)}
+    # 避免除以 0
+    p0 = np.where(p0 == 0, 1e-6, p0)
+    
+    # 計算各資產的獨立報酬倍數
+    price_ratio = pt / p0
+    
+    # 推算未正規化的漂移後權重
+    w_t_unnormalized = w0 * price_ratio
+    
+    # 計算漂移後的正規化百分比
+    total_val = np.sum(w_t_unnormalized)
+    w_t = (w_t_unnormalized / total_val) * 100.0 if total_val > 0 else w0 * 100.0
+    
+    CURRENT_WEIGHTS = {asset: w_t[idx] for idx, asset in enumerate(AVAILABLE_ASSETS)}
 else:
-    # 如果選擇的日期還沒有資料(例如假日、未來)，則維持輸入的錨定權重
     CURRENT_WEIGHTS = ANCHOR_WEIGHTS.copy()
 # ---------------------------------------------------------
 
@@ -288,7 +313,6 @@ with col1:
 with col2:
     if len(AVAILABLE_ASSETS) > 0 and bench_choice in df_all.columns:
         recent_ret = df_all[AVAILABLE_ASSETS].pct_change().tail(window_choice).dropna()
-        # 用漂移後的 CURRENT_WEIGHTS 來計算投資組合風險
         w_array = np.array([CURRENT_WEIGHTS.get(a, 0) / 100 for a in AVAILABLE_ASSETS])
         cov_matrix = recent_ret.cov() * 252
         p_vol = np.sqrt(np.dot(w_array.T, np.dot(cov_matrix, w_array))) if not recent_ret.empty else 0
@@ -358,7 +382,7 @@ st.markdown(f"""
 col_pie, col_beta = st.columns([1, 2.2])
 
 with col_pie:
-    st.markdown(f"<h2 style='color: #38bdf8; font-size: 18px; border-left: 4px solid #38bdf8; padding-left: 10px; margin-bottom: 10px;'>目前實倉配比 (基準: {anchor_date})</h2>", unsafe_allow_html=True)
+    st.markdown(f"<h2 style='color: #38bdf8; font-size: 18px; border-left: 4px solid #38bdf8; padding-left: 10px; margin-bottom: 10px;'>目前實倉配比 (錨定: {anchor_date})</h2>", unsafe_allow_html=True)
     fig_pie = go.Figure(data=[go.Pie(labels=AVAILABLE_ASSETS, values=[CURRENT_WEIGHTS.get(a,0) for a in AVAILABLE_ASSETS], hole=.45, textinfo='label+percent', marker=dict(colors=[CHART_COLORS.get(l, "#94a3b8") for l in AVAILABLE_ASSETS], line=dict(color='#081028', width=2)))])
     fig_pie.update_layout(template='plotly_dark', paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', margin=dict(l=20, r=20, t=10, b=20), height=320, showlegend=False)
     st.plotly_chart(fig_pie, use_container_width=True)
@@ -555,4 +579,4 @@ with st.expander("🔍 歷史回撤與觸發除錯檢視 (Data Inspector)"):
         st.write("資料不齊全，無法顯示除錯表。")
 
 # 標示版本號 (放置於頁尾)
-st.markdown('<div class="version-footer">Powered by Pure Alpha Quantitative Engine | Version 8.8.16 (Anchor Date Drift Build)</div>', unsafe_allow_html=True)
+st.markdown('<div class="version-footer">Powered by Pure Alpha Quantitative Engine | Version 8.8.17 (Exact Drift Correction)</div>', unsafe_allow_html=True)
