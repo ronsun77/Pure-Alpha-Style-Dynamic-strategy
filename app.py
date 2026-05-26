@@ -57,7 +57,7 @@ PORTFOLIO_ASSETS = [tk_core, tk_lev, tk_bond, tk_gold, tk_usd, tk_safe]
 CURRENT_WEIGHTS = {tk_core: 28.71, tk_lev: 35.66, tk_bond: 7.80, tk_gold: 7.65, tk_usd: 8.00, tk_safe: 12.18}
 BULL_BASE = {tk_core: 26.0, tk_lev: 32.0, tk_bond: 7.0, tk_gold: 7.0, tk_usd: 9.0}
 BEAR_BASE = {tk_core: 20.0, tk_lev: 20.0, tk_bond: 10.0, tk_gold: 10.0, tk_usd: 20.0}
-ASSET_ROLES = {tk_core: "核心成長引擎", tk_lev: "動能槓桿放大", tk_bond: "長債負相關避險", tk_gold: "抗通膨終極防禦", tk_usd: "美元流動性避險", tk_safe: "流動性海綿池"}
+ASSET_ROLES = {tk_core: "核心成長引擎", tk_lev: "動能槓桿放大", tk_bond: "長債負相關避險", tk_gold: "抗通膨終極防禦", tk_usd: "美元流動性避險", tk_safe: "流ٹی性海綿池"}
 CHART_COLORS = {tk_core: "#38bdf8", tk_lev: "#818cf8", tk_bond: "#f472b6", tk_gold: "#facc15", tk_usd: "#ef4444", tk_safe: "#94a3b8"}
 
 # ==========================================
@@ -261,7 +261,6 @@ with col2:
         bench_ret = df_all[bench_choice].pct_change().tail(window_choice).dropna()
         if not recent_ret.empty and not bench_ret.empty and len(recent_ret) == len(bench_ret):
             p_ret_series = recent_ret.dot(w_array)
-            # 這裡也改用純數學計算，確保不會出現 NaN 或 0 的怪問題
             p_mean = p_ret_series.mean()
             b_mean = bench_ret.mean()
             numerator = ((p_ret_series - p_mean) * (bench_ret - b_mean)).sum()
@@ -300,7 +299,6 @@ for asset in AVAILABLE_ASSETS:
     
     if 'recent_ret' in locals() and asset in recent_ret and 'bench_ret' in locals() and not bench_ret.empty:
         corr_val = float(recent_ret[asset].corr(bench_ret))
-        # 單一資產 Beta 算式
         a_mean = recent_ret[asset].mean()
         b_mean = bench_ret.mean()
         num = ((recent_ret[asset] - a_mean) * (bench_ret - b_mean)).sum()
@@ -387,6 +385,9 @@ if len(bt_df) > 10 and len(valid_assets) > 0 and bench_choice in bt_df.columns:
     n_days = len(bt_ret)
     port_nav = np.zeros(n_days)
     
+    # 終極解法：記錄每日「真實投資組合報酬率」，避開 .pct_change() 刪除第一天造成的長度錯位
+    port_daily_returns_list = np.zeros(n_days) 
+    
     ret_array = bt_ret[valid_assets].values
     tgt_array = tgt_weights_sub[valid_assets].values
     
@@ -397,6 +398,8 @@ if len(bt_df) > 10 and len(valid_assets) > 0 and bench_choice in bt_df.columns:
     for i in range(n_days):
         day_ret = ret_array[i]
         daily_p_ret = np.dot(current_w, day_ret)
+        
+        port_daily_returns_list[i] = daily_p_ret # 直接存下每一天的報酬率
         port_nav[i] = (1.0 * (1 + daily_p_ret)) if i == 0 else (port_nav[i-1] * (1 + daily_p_ret))
         
         if (1 + daily_p_ret) == 0:
@@ -424,23 +427,22 @@ if len(bt_df) > 10 and len(valid_assets) > 0 and bench_choice in bt_df.columns:
     mdd = ((cum_port / cum_port.cummax()) - 1).min()
     bench_mdd = ((cum_bench / cum_bench.cummax()) - 1).min()
     
-    port_daily_ret_series = cum_port.pct_change().dropna()
+    # 使用迴圈中記錄的真實陣列，保證與基準大盤資料列長度絕對一致
+    port_daily_ret_series = pd.Series(port_daily_returns_list, index=bt_ret.index)
     bt_vol = port_daily_ret_series.std() * np.sqrt(252)
     bench_vol = bt_ret[bench_choice].std() * np.sqrt(252)
     sharpe = (cagr - 0.04) / bt_vol if bt_vol > 0 else 0
     bench_sharpe = (bench_cagr - 0.04) / bench_vol if bench_vol > 0 else 0
     
-    # 終極修復：回測區間 Beta 也手刻純數學公式，絕對不可能變成 NaN 或 0
-    p_series = port_daily_ret_series
-    b_series = bt_ret[bench_choice]
-    if len(p_series) == len(b_series) and len(p_series) > 1:
-        p_mean = p_series.mean()
-        b_mean = b_series.mean()
-        numerator = ((p_series - p_mean) * (b_series - b_mean)).sum()
-        denominator = ((b_series - b_mean)**2).sum()
-        bt_beta = float(numerator / denominator) if denominator != 0 else 0.0
-    else:
-        bt_beta = 0.0
+    # 長度與索引完全吻合後，進行純數學運算
+    p_series = port_daily_ret_series.values
+    b_series = bt_ret[bench_choice].values
+    
+    p_mean = p_series.mean()
+    b_mean = b_series.mean()
+    numerator = ((p_series - p_mean) * (b_series - b_mean)).sum()
+    denominator = ((b_series - b_mean)**2).sum()
+    bt_beta = float(numerator / denominator) if denominator != 0 else 0.0
     
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=cum_port.index, y=cum_port.values, mode='lines', name='Pure Alpha (策略組合)', line=dict(color='#38bdf8', width=2)))
@@ -516,4 +518,4 @@ with st.expander("🔍 歷史回撤與觸發除錯檢視 (Data Inspector)"):
         st.write("資料不齊全，無法顯示除錯表。")
 
 # 標示版本號 (放置於頁尾)
-st.markdown('<div class="version-footer">Powered by Pure Alpha Quantitative Engine | Version 8.8.12 (Beta Pure Math Build)</div>', unsafe_allow_html=True)
+st.markdown('<div class="version-footer">Powered by Pure Alpha Quantitative Engine | Version 8.8.13 (Absolute Beta Alignment)</div>', unsafe_allow_html=True)
