@@ -54,10 +54,9 @@ with st.sidebar.expander("⚙️ 自訂資產代碼 (ETF Tickers)", expanded=Fal
 
 PORTFOLIO_ASSETS = [tk_core, tk_lev, tk_bond, tk_gold, tk_usd, tk_safe]
 
-CURRENT_WEIGHTS = {tk_core: 28.71, tk_lev: 35.66, tk_bond: 7.80, tk_gold: 7.65, tk_usd: 8.00, tk_safe: 12.18}
 BULL_BASE = {tk_core: 26.0, tk_lev: 32.0, tk_bond: 7.0, tk_gold: 7.0, tk_usd: 9.0}
 BEAR_BASE = {tk_core: 20.0, tk_lev: 20.0, tk_bond: 10.0, tk_gold: 10.0, tk_usd: 20.0}
-ASSET_ROLES = {tk_core: "核心成長引擎", tk_lev: "動能槓桿放大", tk_bond: "長債負相關避險", tk_gold: "抗通膨終極防禦", tk_usd: "美元流動性避險", tk_safe: "流ٹی性海綿池"}
+ASSET_ROLES = {tk_core: "核心成長引擎", tk_lev: "動能槓桿放大", tk_bond: "長債負相關避險", tk_gold: "抗通膨終極防禦", tk_usd: "美元流動性避險", tk_safe: "流動性海綿池"}
 CHART_COLORS = {tk_core: "#38bdf8", tk_lev: "#818cf8", tk_bond: "#f472b6", tk_gold: "#facc15", tk_usd: "#ef4444", tk_safe: "#94a3b8"}
 
 # ==========================================
@@ -150,7 +149,7 @@ for b in raw_bench_options:
         bench_options.append(b)
 
 bench_choice = st.sidebar.selectbox("對標基準", bench_options, index=0)
-window_choice = st.sidebar.selectbox("滾動週期", [21, 63, 126], index=0)
+window_choice = st.sidebar.selectbox("滾জিৎ週期", [21, 63, 126], index=0)
 
 dip_lv1_frac = dip_lv1 / 100.0
 dip_lv2_frac = dip_lv2 / 100.0
@@ -210,6 +209,51 @@ tgt_weights_df[tk_safe] = np.maximum(0, 1.0 - tgt_weights_df[[tk_core, tk_lev, t
 
 targets = (tgt_weights_df.loc[df_all.index[-1]] * 100).to_dict()
 
+# ---------------------------------------------------------
+# 新增：動態權重推算引擎 (Dynamic Drift Calculation)
+# 這裡我們利用過去一段時間(例如最近一年)的真實價格變動，
+# 模擬出"如果沒有觸發再平衡，資產權重會自然漂移到什麼比例"
+# ---------------------------------------------------------
+drift_window = 252 # 用過去 252 天模擬漂移
+if len(df_all) > drift_window:
+    sim_df = df_all[AVAILABLE_ASSETS].iloc[-drift_window:]
+    sim_tgt = tgt_weights_df[AVAILABLE_ASSETS].iloc[-drift_window:]
+    
+    sim_ret = sim_df.pct_change().dropna()
+    sim_tgt_arr = sim_tgt.loc[sim_ret.index].values
+    sim_ret_arr = sim_ret.values
+    
+    # 初始權重設定為 252 天前的目標權重
+    current_w = sim_tgt_arr[0].copy()
+    threshold_frac = threshold / 100.0
+    
+    for i in range(len(sim_ret)):
+        day_ret = sim_ret_arr[i]
+        daily_p_ret = np.dot(current_w, day_ret)
+        
+        # 模擬每天的權重漂移
+        if (1 + daily_p_ret) == 0:
+            drifted_w = current_w.copy()
+        else:
+            drifted_w = current_w * (1 + day_ret) / (1 + daily_p_ret)
+        
+        # 如果觸發再平衡，就回到目標權重，否則繼續漂移
+        if i < len(sim_ret) - 1:
+            tgt_w = sim_tgt_arr[i+1]
+            deviations = np.abs(drifted_w - tgt_w)
+            if np.max(deviations) >= threshold_frac:
+                current_w = tgt_w.copy()
+            else:
+                current_w = drifted_w.copy()
+    
+    # 將最後一天的漂移權重轉為百分比字典
+    CURRENT_WEIGHTS = {asset: current_w[idx] * 100 for idx, asset in enumerate(AVAILABLE_ASSETS)}
+else:
+    # 資料不足時的備用方案，預設與目標權重相同
+    CURRENT_WEIGHTS = {asset: targets.get(asset, 0) for asset in AVAILABLE_ASSETS}
+# ---------------------------------------------------------
+
+
 # UI 盤中狀態判定
 current_spx_dd = df_all['SPX_DD'].iloc[-1]
 last_state = df_all['Regime'].iloc[-2] if len(df_all) > 1 else 1
@@ -254,7 +298,8 @@ with col1:
 with col2:
     if len(AVAILABLE_ASSETS) > 0 and bench_choice in df_all.columns:
         recent_ret = df_all[AVAILABLE_ASSETS].pct_change().tail(window_choice).dropna()
-        w_array = np.array([targets.get(a, 0) / 100 for a in AVAILABLE_ASSETS])
+        # 用漂移後的 CURRENT_WEIGHTS 來計算風險
+        w_array = np.array([CURRENT_WEIGHTS.get(a, 0) / 100 for a in AVAILABLE_ASSETS])
         cov_matrix = recent_ret.cov() * 252
         p_vol = np.sqrt(np.dot(w_array.T, np.dot(cov_matrix, w_array))) if not recent_ret.empty else 0
         
@@ -313,7 +358,7 @@ for asset in AVAILABLE_ASSETS:
 
 st.markdown(f"""
 <div class="cyber-card" style="margin-bottom:30px;">
-    <table class="cyber-table"><thead><tr><th>資產代碼</th><th>目前實倉</th><th>目標權重</th><th>部位落差</th><th>波動率({window_choice}D)</th><th>相關係數</th><th>Rolling Beta</th><th>執行指令</th></tr></thead><tbody>{table_rows}</tbody></table>
+    <table class="cyber-table"><thead><tr><th>資產代碼</th><th><span style="color:#38bdf8;">動態實倉(模擬)</span></th><th>目標權重</th><th>部位落差</th><th>波動率({window_choice}D)</th><th>相關係數</th><th>Rolling Beta</th><th>執行指令</th></tr></thead><tbody>{table_rows}</tbody></table>
 </div>
 """, unsafe_allow_html=True)
 
@@ -323,7 +368,7 @@ st.markdown(f"""
 col_pie, col_beta = st.columns([1, 2.2])
 
 with col_pie:
-    st.markdown("<h2 style='color: #38bdf8; font-size: 18px; border-left: 4px solid #38bdf8; padding-left: 10px; margin-bottom: 10px;'>目前實倉資產配比</h2>", unsafe_allow_html=True)
+    st.markdown("<h2 style='color: #38bdf8; font-size: 18px; border-left: 4px solid #38bdf8; padding-left: 10px; margin-bottom: 10px;'>動態實倉資產配比</h2>", unsafe_allow_html=True)
     fig_pie = go.Figure(data=[go.Pie(labels=AVAILABLE_ASSETS, values=[CURRENT_WEIGHTS.get(a,0) for a in AVAILABLE_ASSETS], hole=.45, textinfo='label+percent', marker=dict(colors=[CHART_COLORS.get(l, "#94a3b8") for l in AVAILABLE_ASSETS], line=dict(color='#081028', width=2)))])
     fig_pie.update_layout(template='plotly_dark', paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', margin=dict(l=20, r=20, t=10, b=20), height=320, showlegend=False)
     st.plotly_chart(fig_pie, use_container_width=True)
@@ -385,9 +430,6 @@ if len(bt_df) > 10 and len(valid_assets) > 0 and bench_choice in bt_df.columns:
     n_days = len(bt_ret)
     port_nav = np.zeros(n_days)
     
-    # 終極解法：記錄每日「真實投資組合報酬率」，避開 .pct_change() 刪除第一天造成的長度錯位
-    port_daily_returns_list = np.zeros(n_days) 
-    
     ret_array = bt_ret[valid_assets].values
     tgt_array = tgt_weights_sub[valid_assets].values
     
@@ -398,8 +440,6 @@ if len(bt_df) > 10 and len(valid_assets) > 0 and bench_choice in bt_df.columns:
     for i in range(n_days):
         day_ret = ret_array[i]
         daily_p_ret = np.dot(current_w, day_ret)
-        
-        port_daily_returns_list[i] = daily_p_ret # 直接存下每一天的報酬率
         port_nav[i] = (1.0 * (1 + daily_p_ret)) if i == 0 else (port_nav[i-1] * (1 + daily_p_ret))
         
         if (1 + daily_p_ret) == 0:
@@ -427,22 +467,22 @@ if len(bt_df) > 10 and len(valid_assets) > 0 and bench_choice in bt_df.columns:
     mdd = ((cum_port / cum_port.cummax()) - 1).min()
     bench_mdd = ((cum_bench / cum_bench.cummax()) - 1).min()
     
-    # 使用迴圈中記錄的真實陣列，保證與基準大盤資料列長度絕對一致
-    port_daily_ret_series = pd.Series(port_daily_returns_list, index=bt_ret.index)
+    port_daily_ret_series = cum_port.pct_change().dropna()
     bt_vol = port_daily_ret_series.std() * np.sqrt(252)
     bench_vol = bt_ret[bench_choice].std() * np.sqrt(252)
     sharpe = (cagr - 0.04) / bt_vol if bt_vol > 0 else 0
     bench_sharpe = (bench_cagr - 0.04) / bench_vol if bench_vol > 0 else 0
     
-    # 長度與索引完全吻合後，進行純數學運算
     p_series = port_daily_ret_series.values
     b_series = bt_ret[bench_choice].values
-    
-    p_mean = p_series.mean()
-    b_mean = b_series.mean()
-    numerator = ((p_series - p_mean) * (b_series - b_mean)).sum()
-    denominator = ((b_series - b_mean)**2).sum()
-    bt_beta = float(numerator / denominator) if denominator != 0 else 0.0
+    if len(p_series) == len(b_series) and len(p_series) > 1:
+        p_mean = p_series.mean()
+        b_mean = b_series.mean()
+        numerator = ((p_series - p_mean) * (b_series - b_mean)).sum()
+        denominator = ((b_series - b_mean)**2).sum()
+        bt_beta = float(numerator / denominator) if denominator != 0 else 0.0
+    else:
+        bt_beta = 0.0
     
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=cum_port.index, y=cum_port.values, mode='lines', name='Pure Alpha (策略組合)', line=dict(color='#38bdf8', width=2)))
@@ -518,4 +558,4 @@ with st.expander("🔍 歷史回撤與觸發除錯檢視 (Data Inspector)"):
         st.write("資料不齊全，無法顯示除錯表。")
 
 # 標示版本號 (放置於頁尾)
-st.markdown('<div class="version-footer">Powered by Pure Alpha Quantitative Engine | Version 8.8.13 (Absolute Beta Alignment)</div>', unsafe_allow_html=True)
+st.markdown('<div class="version-footer">Powered by Pure Alpha Quantitative Engine | Version 8.8.14 (Drifting Weights Build)</div>', unsafe_allow_html=True)
