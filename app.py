@@ -149,7 +149,7 @@ for b in raw_bench_options:
         bench_options.append(b)
 
 bench_choice = st.sidebar.selectbox("對標基準", bench_options, index=0)
-window_choice = st.sidebar.selectbox("滾জিৎ週期", [21, 63, 126], index=0)
+window_choice = st.sidebar.selectbox("滾動週期", [21, 63, 126], index=0)
 
 dip_lv1_frac = dip_lv1 / 100.0
 dip_lv2_frac = dip_lv2 / 100.0
@@ -210,11 +210,9 @@ tgt_weights_df[tk_safe] = np.maximum(0, 1.0 - tgt_weights_df[[tk_core, tk_lev, t
 targets = (tgt_weights_df.loc[df_all.index[-1]] * 100).to_dict()
 
 # ---------------------------------------------------------
-# 新增：動態權重推算引擎 (Dynamic Drift Calculation)
-# 這裡我們利用過去一段時間(例如最近一年)的真實價格變動，
-# 模擬出"如果沒有觸發再平衡，資產權重會自然漂移到什麼比例"
+# 動態權重推算引擎 (Dynamic Drift Calculation)
 # ---------------------------------------------------------
-drift_window = 252 # 用過去 252 天模擬漂移
+drift_window = 252 
 if len(df_all) > drift_window:
     sim_df = df_all[AVAILABLE_ASSETS].iloc[-drift_window:]
     sim_tgt = tgt_weights_df[AVAILABLE_ASSETS].iloc[-drift_window:]
@@ -223,7 +221,6 @@ if len(df_all) > drift_window:
     sim_tgt_arr = sim_tgt.loc[sim_ret.index].values
     sim_ret_arr = sim_ret.values
     
-    # 初始權重設定為 252 天前的目標權重
     current_w = sim_tgt_arr[0].copy()
     threshold_frac = threshold / 100.0
     
@@ -231,13 +228,11 @@ if len(df_all) > drift_window:
         day_ret = sim_ret_arr[i]
         daily_p_ret = np.dot(current_w, day_ret)
         
-        # 模擬每天的權重漂移
         if (1 + daily_p_ret) == 0:
             drifted_w = current_w.copy()
         else:
             drifted_w = current_w * (1 + day_ret) / (1 + daily_p_ret)
         
-        # 如果觸發再平衡，就回到目標權重，否則繼續漂移
         if i < len(sim_ret) - 1:
             tgt_w = sim_tgt_arr[i+1]
             deviations = np.abs(drifted_w - tgt_w)
@@ -246,13 +241,10 @@ if len(df_all) > drift_window:
             else:
                 current_w = drifted_w.copy()
     
-    # 將最後一天的漂移權重轉為百分比字典
     CURRENT_WEIGHTS = {asset: current_w[idx] * 100 for idx, asset in enumerate(AVAILABLE_ASSETS)}
 else:
-    # 資料不足時的備用方案，預設與目標權重相同
     CURRENT_WEIGHTS = {asset: targets.get(asset, 0) for asset in AVAILABLE_ASSETS}
 # ---------------------------------------------------------
-
 
 # UI 盤中狀態判定
 current_spx_dd = df_all['SPX_DD'].iloc[-1]
@@ -298,7 +290,6 @@ with col1:
 with col2:
     if len(AVAILABLE_ASSETS) > 0 and bench_choice in df_all.columns:
         recent_ret = df_all[AVAILABLE_ASSETS].pct_change().tail(window_choice).dropna()
-        # 用漂移後的 CURRENT_WEIGHTS 來計算風險
         w_array = np.array([CURRENT_WEIGHTS.get(a, 0) / 100 for a in AVAILABLE_ASSETS])
         cov_matrix = recent_ret.cov() * 252
         p_vol = np.sqrt(np.dot(w_array.T, np.dot(cov_matrix, w_array))) if not recent_ret.empty else 0
@@ -430,6 +421,9 @@ if len(bt_df) > 10 and len(valid_assets) > 0 and bench_choice in bt_df.columns:
     n_days = len(bt_ret)
     port_nav = np.zeros(n_days)
     
+    # 終極解法：記錄每日「真實投資組合報酬率」，避開 .pct_change() 刪除第一天造成的長度錯位
+    port_daily_returns_list = np.zeros(n_days) 
+    
     ret_array = bt_ret[valid_assets].values
     tgt_array = tgt_weights_sub[valid_assets].values
     
@@ -440,6 +434,8 @@ if len(bt_df) > 10 and len(valid_assets) > 0 and bench_choice in bt_df.columns:
     for i in range(n_days):
         day_ret = ret_array[i]
         daily_p_ret = np.dot(current_w, day_ret)
+        
+        port_daily_returns_list[i] = daily_p_ret # 直接存下每一天的真實報酬率
         port_nav[i] = (1.0 * (1 + daily_p_ret)) if i == 0 else (port_nav[i-1] * (1 + daily_p_ret))
         
         if (1 + daily_p_ret) == 0:
@@ -467,14 +463,17 @@ if len(bt_df) > 10 and len(valid_assets) > 0 and bench_choice in bt_df.columns:
     mdd = ((cum_port / cum_port.cummax()) - 1).min()
     bench_mdd = ((cum_bench / cum_bench.cummax()) - 1).min()
     
-    port_daily_ret_series = cum_port.pct_change().dropna()
+    # 使用迴圈中記錄的真實陣列，保證與基準大盤資料列長度絕對一致
+    port_daily_ret_series = pd.Series(port_daily_returns_list, index=bt_ret.index)
     bt_vol = port_daily_ret_series.std() * np.sqrt(252)
     bench_vol = bt_ret[bench_choice].std() * np.sqrt(252)
     sharpe = (cagr - 0.04) / bt_vol if bt_vol > 0 else 0
     bench_sharpe = (bench_cagr - 0.04) / bench_vol if bench_vol > 0 else 0
     
+    # 長度與索引完全吻合後，進行純數學運算
     p_series = port_daily_ret_series.values
     b_series = bt_ret[bench_choice].values
+    
     if len(p_series) == len(b_series) and len(p_series) > 1:
         p_mean = p_series.mean()
         b_mean = b_series.mean()
@@ -558,4 +557,4 @@ with st.expander("🔍 歷史回撤與觸發除錯檢視 (Data Inspector)"):
         st.write("資料不齊全，無法顯示除錯表。")
 
 # 標示版本號 (放置於頁尾)
-st.markdown('<div class="version-footer">Powered by Pure Alpha Quantitative Engine | Version 8.8.14 (Drifting Weights Build)</div>', unsafe_allow_html=True)
+st.markdown('<div class="version-footer">Powered by Pure Alpha Quantitative Engine | Version 8.8.15 (All-in-One Fix Build)</div>', unsafe_allow_html=True)
