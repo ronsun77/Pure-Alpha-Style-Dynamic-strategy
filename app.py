@@ -70,7 +70,6 @@ def load_data(tickers_tuple):
             for _ in range(3):
                 df = yf.download(t, period="max", progress=False)
                 if not df.empty:
-                    # 強制使用 Adj Close，解決債券與現金配息導致的價格虛假縮水問題
                     close_col = 'Adj Close' if 'Adj Close' in df.columns else 'Close'
                     if close_col in df.columns:
                         data_dict[t] = df[close_col].iloc[:, 0] if isinstance(df[close_col], pd.DataFrame) else df[close_col]
@@ -136,11 +135,7 @@ df_all = raw_df_all.ffill().bfill()
 latest_core = float(df_all[tk_core].iloc[-1])
 computed_ma200 = float(df_all[tk_core].rolling(200).mean().iloc[-1]) if len(df_all) >= 200 else latest_core
 
-# ---------------------------------------------------------
-# 開放使用者自行輸入錨定權重
-# ---------------------------------------------------------
 st.sidebar.markdown("<h3 style='color:#38bdf8; margin-top:15px;'>📅 實倉錨定基準設定</h3>", unsafe_allow_html=True)
-# 預設基準日更新為 2026/5/24
 anchor_date = st.sidebar.date_input("實倉錨定日 (起始點)", datetime.date(2026, 5, 24))
 
 st.sidebar.markdown("<div style='color:#cbd5e1; font-size:13px; margin-bottom:10px;'>請輸入你在該日期的真實持倉比例(%)：</div>", unsafe_allow_html=True)
@@ -152,7 +147,6 @@ aw_gold = col_w2.number_input(f"{tk_gold}", value=7.65, step=0.1)
 aw_usd  = col_w1.number_input(f"{tk_usd}", value=8.00, step=0.1)
 aw_safe = col_w2.number_input(f"{tk_safe}", value=12.18, step=0.1)
 
-# 把使用者輸入的權重存成錨定起點
 ANCHOR_WEIGHTS = {tk_core: aw_core, tk_lev: aw_lev, tk_bond: aw_bond, tk_gold: aw_gold, tk_usd: aw_usd, tk_safe: aw_safe}
 
 st.sidebar.markdown("---")
@@ -236,30 +230,25 @@ tgt_weights_df[tk_safe] = np.maximum(0, 1.0 - tgt_weights_df[[tk_core, tk_lev, t
 targets = (tgt_weights_df.loc[df_all.index[-1]] * 100).to_dict()
 
 # ---------------------------------------------------------
-# 動態實倉漂移引擎 (首尾價格比例法，無累積誤差)
+# 動態實倉漂移引擎 (首尾價格比例法 + 交易日精準對齊)
 # ---------------------------------------------------------
-drift_mask = df_all.index.date >= anchor_date
-drift_df = df_all.loc[drift_mask, AVAILABLE_ASSETS]
+# 找出「不大於」錨定日的所有歷史資料
+past_df = df_all.loc[df_all.index.date <= anchor_date, AVAILABLE_ASSETS]
 
-if not drift_df.empty:
-    # 取得錨定基準日當天的價格
-    p0 = drift_df.iloc[0].values
-    # 取得最新收盤的價格
-    pt = drift_df.iloc[-1].values
+if not past_df.empty and not df_all.empty:
+    # 取得錨定日「當天」或「之前最後一個真實交易日」的收盤價作為 P0
+    p0 = past_df.iloc[-1].values
+    # 取得最新收盤的價格 PT
+    pt = df_all[AVAILABLE_ASSETS].iloc[-1].values
     
-    # 原始輸入的權重
     w0 = np.array([ANCHOR_WEIGHTS.get(a, 0) / 100.0 for a in AVAILABLE_ASSETS])
     
-    # 避免除以 0
     p0 = np.where(p0 == 0, 1e-6, p0)
     
-    # 計算各資產的獨立報酬倍數
+    # 計算真實漲跌幅，並推算漂移權重
     price_ratio = pt / p0
-    
-    # 推算未正規化的漂移後權重
     w_t_unnormalized = w0 * price_ratio
     
-    # 計算漂移後的正規化百分比
     total_val = np.sum(w_t_unnormalized)
     w_t = (w_t_unnormalized / total_val) * 100.0 if total_val > 0 else w0 * 100.0
     
@@ -267,7 +256,6 @@ if not drift_df.empty:
 else:
     CURRENT_WEIGHTS = ANCHOR_WEIGHTS.copy()
 # ---------------------------------------------------------
-
 
 # UI 盤中狀態判定
 current_spx_dd = df_all['SPX_DD'].iloc[-1]
@@ -444,7 +432,6 @@ if len(bt_df) > 10 and len(valid_assets) > 0 and bench_choice in bt_df.columns:
     n_days = len(bt_ret)
     port_nav = np.zeros(n_days)
     
-    # 完美對齊解法：記錄每日「真實投資組合報酬率」
     port_daily_returns_list = np.zeros(n_days) 
     
     ret_array = bt_ret[valid_assets].values
@@ -486,7 +473,6 @@ if len(bt_df) > 10 and len(valid_assets) > 0 and bench_choice in bt_df.columns:
     mdd = ((cum_port / cum_port.cummax()) - 1).min()
     bench_mdd = ((cum_bench / cum_bench.cummax()) - 1).min()
     
-    # 這裡重新使用記錄的陣列，保證和基準長度百分百一致
     port_daily_ret_series = pd.Series(port_daily_returns_list, index=bt_ret.index)
     bt_vol = port_daily_ret_series.std() * np.sqrt(252)
     bench_vol = bt_ret[bench_choice].std() * np.sqrt(252)
@@ -579,4 +565,4 @@ with st.expander("🔍 歷史回撤與觸發除錯檢視 (Data Inspector)"):
         st.write("資料不齊全，無法顯示除錯表。")
 
 # 標示版本號 (放置於頁尾)
-st.markdown('<div class="version-footer">Powered by Pure Alpha Quantitative Engine | Version 8.8.17 (Exact Drift Correction)</div>', unsafe_allow_html=True)
+st.markdown('<div class="version-footer">Powered by Pure Alpha Quantitative Engine | Version 8.8.18 (Calendar Anchoring Build)</div>', unsafe_allow_html=True)
