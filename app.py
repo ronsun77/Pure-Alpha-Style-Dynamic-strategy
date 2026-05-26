@@ -95,7 +95,8 @@ def load_data(tickers_tuple):
         return pd.concat(data_dict, axis=1)
     return pd.DataFrame()
 
-fetch_list = tuple(set(PORTFOLIO_ASSETS + ["SPY"]))
+# 關鍵防呆：確保系統永遠把 QQQ 與 SPY 載下來當作對標備用
+fetch_list = tuple(set(PORTFOLIO_ASSETS + ["SPY", "QQQ"]))
 
 with st.spinner('正在從 Yahoo Finance 同步長期歷史市場數據...'):
     raw_df_all = load_data(fetch_list)
@@ -140,11 +141,18 @@ st.sidebar.markdown("<h3 style='color:#facc15;'>左側抄底門檻設定</h3>", 
 dip_lv1 = st.sidebar.slider("Lv1 抄底門檻 (%)", 10.0, 25.0, 19.0, step=0.1) 
 dip_lv2 = st.sidebar.slider("Lv2 恐慌門檻 (%)", 20.0, 40.0, 30.0, step=0.1) 
 
-bench_options = [tk_core, "SPY"]
-if "^GSPC" in df_all.columns: bench_options.append("^GSPC")
-# 預設對標基準改為 QQQ (index=0)
-bench_choice = st.sidebar.selectbox("對標基準", bench_options, index=0)
+# 核心基準解耦邏輯：保證 QQQ 永遠是第一選項
+raw_bench_options = ["QQQ", tk_core, "SPY"]
+if "^GSPC" in df_all.columns: 
+    raw_bench_options.append("^GSPC")
 
+# 過濾掉可能重複的選項 (例如 tk_core 本身就是 QQQ) 並確認資料有成功下載
+bench_options = []
+for b in raw_bench_options:
+    if b not in bench_options and b in df_all.columns:
+        bench_options.append(b)
+
+bench_choice = st.sidebar.selectbox("對標基準", bench_options, index=0)
 window_choice = st.sidebar.selectbox("滾動週期", [21, 63, 126], index=0)
 
 dip_lv1_frac = dip_lv1 / 100.0
@@ -256,7 +264,6 @@ with col2:
         bench_ret = df_all[bench_choice].pct_change().tail(window_choice).dropna()
         if not recent_ret.empty and not bench_ret.empty and len(recent_ret) == len(bench_ret):
             p_ret_series = recent_ret.dot(w_array)
-            # 確保使用 float 型態
             p_beta = float((p_ret_series.cov(bench_ret) * 252) / (bench_ret.var() * 252))
         else:
             p_beta = 0.0
@@ -416,10 +423,14 @@ if len(bt_df) > 10 and len(valid_assets) > 0 and bench_choice in bt_df.columns:
     sharpe = (cagr - 0.04) / bt_vol if bt_vol > 0 else 0
     bench_sharpe = (bench_cagr - 0.04) / bench_vol if bench_vol > 0 else 0
     
-    # 強制使用 Pandas 原生計算，並確保輸出為 float
-    bt_cov = float(port_daily_ret_series.cov(bt_ret[bench_choice]))
-    bt_var = float(bt_ret[bench_choice].var())
-    bt_beta = bt_cov / bt_var if bt_var > 0 else 0.0
+    p_series = port_daily_ret_series.values
+    b_series = bt_ret[bench_choice].values
+    if len(p_series) == len(b_series) and len(p_series) > 1:
+        cov_val = np.cov(p_series, b_series)[0, 1]
+        var_val = np.var(b_series, ddof=1)
+        bt_beta = cov_val / var_val if var_val > 0 else 0.0
+    else:
+        bt_beta = 0.0
     
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=cum_port.index, y=cum_port.values, mode='lines', name='Pure Alpha (策略組合)', line=dict(color='#38bdf8', width=2)))
@@ -495,4 +506,4 @@ with st.expander("🔍 歷史回撤與觸發除錯檢視 (Data Inspector)"):
         st.write("資料不齊全，無法顯示除錯表。")
 
 # 標示版本號 (放置於頁尾)
-st.markdown('<div class="version-footer">Powered by Pure Alpha Quantitative Engine | Version 8.8.8 (Beta Absolute Stable Build)</div>', unsafe_allow_html=True)
+st.markdown('<div class="version-footer">Powered by Pure Alpha Quantitative Engine | Version 8.8.11 (Decoupled Benchmark Build)</div>', unsafe_allow_html=True)
