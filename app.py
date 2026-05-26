@@ -4,7 +4,7 @@ import numpy as np
 import yfinance as yf
 import plotly.graph_objects as go
 import time
-from datetime import datetime, timedelta
+import datetime
 
 # ==========================================
 # 0. 網頁基礎設定與終極 CSS
@@ -53,6 +53,9 @@ with st.sidebar.expander("⚙️ 自訂資產代碼 (ETF Tickers)", expanded=Fal
     tk_safe = st.text_input("流動性海綿池 (預設 SGOV)", "SGOV").upper()
 
 PORTFOLIO_ASSETS = [tk_core, tk_lev, tk_bond, tk_gold, tk_usd, tk_safe]
+
+# 將寫死的權重改名為「基準日錨定權重 (Anchor Weights)」
+ANCHOR_WEIGHTS = {tk_core: 28.71, tk_lev: 35.66, tk_bond: 7.80, tk_gold: 7.65, tk_usd: 8.00, tk_safe: 12.18}
 
 BULL_BASE = {tk_core: 26.0, tk_lev: 32.0, tk_bond: 7.0, tk_gold: 7.0, tk_usd: 9.0}
 BEAR_BASE = {tk_core: 20.0, tk_lev: 20.0, tk_bond: 10.0, tk_gold: 10.0, tk_usd: 20.0}
@@ -130,6 +133,10 @@ df_all = raw_df_all.ffill().bfill()
 latest_core = float(df_all[tk_core].iloc[-1])
 computed_ma200 = float(df_all[tk_core].rolling(200).mean().iloc[-1]) if len(df_all) >= 200 else latest_core
 
+# 新增：動態實倉錨定日設定
+st.sidebar.markdown("<h3 style='color:#38bdf8; margin-top:15px;'>📅 動態實倉基準設定</h3>", unsafe_allow_html=True)
+anchor_date = st.sidebar.date_input("實倉錨定日 (起始點)", datetime.date(2026, 2, 24))
+
 sim_core = st.sidebar.slider(f"{tk_core} 模擬/現價", 100.0, 900.0, latest_core, step=0.01)
 sim_ma200 = st.sidebar.slider(f"{tk_core} MA200 基準線", 100.0, 800.0, computed_ma200, step=0.01)
 k_value = st.sidebar.slider("動態縮放 K 值", 0.500, 1.500, 1.137, step=0.001)
@@ -155,7 +162,7 @@ dip_lv1_frac = dip_lv1 / 100.0
 dip_lv2_frac = dip_lv2 / 100.0
 
 # ==========================================
-# 4. 雙門檻 + 盤中觸價狀態機 (Pandas 原生運算)
+# 4. 雙門檻 + 盤中觸價狀態機
 # ==========================================
 df_all['MA200'] = df_all[tk_core].rolling(200).mean()
 df_all['SPX_Max'] = df_all[h_col].cummax()
@@ -210,41 +217,32 @@ tgt_weights_df[tk_safe] = np.maximum(0, 1.0 - tgt_weights_df[[tk_core, tk_lev, t
 targets = (tgt_weights_df.loc[df_all.index[-1]] * 100).to_dict()
 
 # ---------------------------------------------------------
-# 動態權重推算引擎 (Dynamic Drift Calculation)
+# 動態實倉漂移引擎 (基於特定基準日的真實漲跌漂移)
 # ---------------------------------------------------------
-drift_window = 252 
-if len(df_all) > drift_window:
-    sim_df = df_all[AVAILABLE_ASSETS].iloc[-drift_window:]
-    sim_tgt = tgt_weights_df[AVAILABLE_ASSETS].iloc[-drift_window:]
+drift_mask = df_all.index.date >= anchor_date
+drift_df = df_all.loc[drift_mask, AVAILABLE_ASSETS]
+
+if len(drift_df) > 1:
+    drift_ret = drift_df.pct_change().dropna().values
     
-    sim_ret = sim_df.pct_change().dropna()
-    sim_tgt_arr = sim_tgt.loc[sim_ret.index].values
-    sim_ret_arr = sim_ret.values
+    # 提取我們輸入的 2026/2/24 原始實倉權重作為基準起點
+    current_w = np.array([ANCHOR_WEIGHTS.get(a, 0) / 100.0 for a in AVAILABLE_ASSETS])
     
-    current_w = sim_tgt_arr[0].copy()
-    threshold_frac = threshold / 100.0
-    
-    for i in range(len(sim_ret)):
-        day_ret = sim_ret_arr[i]
+    # 【關鍵修改】：這裡我們「不」進行自動再平衡！
+    # 這樣漂移才會真實累積，UI 上才能顯現出超過 2% 的差距，並亮起 BUY/SELL 燈號。
+    for i in range(len(drift_ret)):
+        day_ret = drift_ret[i]
         daily_p_ret = np.dot(current_w, day_ret)
         
-        if (1 + daily_p_ret) == 0:
-            drifted_w = current_w.copy()
-        else:
-            drifted_w = current_w * (1 + day_ret) / (1 + daily_p_ret)
-        
-        if i < len(sim_ret) - 1:
-            tgt_w = sim_tgt_arr[i+1]
-            deviations = np.abs(drifted_w - tgt_w)
-            if np.max(deviations) >= threshold_frac:
-                current_w = tgt_w.copy()
-            else:
-                current_w = drifted_w.copy()
-    
+        if (1 + daily_p_ret) != 0:
+            current_w = current_w * (1 + day_ret) / (1 + daily_p_ret)
+            
     CURRENT_WEIGHTS = {asset: current_w[idx] * 100 for idx, asset in enumerate(AVAILABLE_ASSETS)}
 else:
-    CURRENT_WEIGHTS = {asset: targets.get(asset, 0) for asset in AVAILABLE_ASSETS}
+    # 如果選擇的日期還沒有資料(例如假日、未來)，則維持輸入的錨定權重
+    CURRENT_WEIGHTS = ANCHOR_WEIGHTS.copy()
 # ---------------------------------------------------------
+
 
 # UI 盤中狀態判定
 current_spx_dd = df_all['SPX_DD'].iloc[-1]
@@ -290,6 +288,7 @@ with col1:
 with col2:
     if len(AVAILABLE_ASSETS) > 0 and bench_choice in df_all.columns:
         recent_ret = df_all[AVAILABLE_ASSETS].pct_change().tail(window_choice).dropna()
+        # 用漂移後的 CURRENT_WEIGHTS 來計算投資組合風險
         w_array = np.array([CURRENT_WEIGHTS.get(a, 0) / 100 for a in AVAILABLE_ASSETS])
         cov_matrix = recent_ret.cov() * 252
         p_vol = np.sqrt(np.dot(w_array.T, np.dot(cov_matrix, w_array))) if not recent_ret.empty else 0
@@ -349,7 +348,7 @@ for asset in AVAILABLE_ASSETS:
 
 st.markdown(f"""
 <div class="cyber-card" style="margin-bottom:30px;">
-    <table class="cyber-table"><thead><tr><th>資產代碼</th><th><span style="color:#38bdf8;">動態實倉(模擬)</span></th><th>目標權重</th><th>部位落差</th><th>波動率({window_choice}D)</th><th>相關係數</th><th>Rolling Beta</th><th>執行指令</th></tr></thead><tbody>{table_rows}</tbody></table>
+    <table class="cyber-table"><thead><tr><th>資產代碼</th><th><span style="color:#38bdf8;">動態實倉(自然漂移)</span></th><th>目標權重</th><th>部位落差</th><th>波動率({window_choice}D)</th><th>相關係數</th><th>Rolling Beta</th><th>執行指令</th></tr></thead><tbody>{table_rows}</tbody></table>
 </div>
 """, unsafe_allow_html=True)
 
@@ -359,7 +358,7 @@ st.markdown(f"""
 col_pie, col_beta = st.columns([1, 2.2])
 
 with col_pie:
-    st.markdown("<h2 style='color: #38bdf8; font-size: 18px; border-left: 4px solid #38bdf8; padding-left: 10px; margin-bottom: 10px;'>動態實倉資產配比</h2>", unsafe_allow_html=True)
+    st.markdown(f"<h2 style='color: #38bdf8; font-size: 18px; border-left: 4px solid #38bdf8; padding-left: 10px; margin-bottom: 10px;'>目前實倉配比 (基準: {anchor_date})</h2>", unsafe_allow_html=True)
     fig_pie = go.Figure(data=[go.Pie(labels=AVAILABLE_ASSETS, values=[CURRENT_WEIGHTS.get(a,0) for a in AVAILABLE_ASSETS], hole=.45, textinfo='label+percent', marker=dict(colors=[CHART_COLORS.get(l, "#94a3b8") for l in AVAILABLE_ASSETS], line=dict(color='#081028', width=2)))])
     fig_pie.update_layout(template='plotly_dark', paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', margin=dict(l=20, r=20, t=10, b=20), height=320, showlegend=False)
     st.plotly_chart(fig_pie, use_container_width=True)
@@ -421,7 +420,7 @@ if len(bt_df) > 10 and len(valid_assets) > 0 and bench_choice in bt_df.columns:
     n_days = len(bt_ret)
     port_nav = np.zeros(n_days)
     
-    # 終極解法：記錄每日「真實投資組合報酬率」，避開 .pct_change() 刪除第一天造成的長度錯位
+    # 完美對齊解法：記錄每日「真實投資組合報酬率」
     port_daily_returns_list = np.zeros(n_days) 
     
     ret_array = bt_ret[valid_assets].values
@@ -435,7 +434,7 @@ if len(bt_df) > 10 and len(valid_assets) > 0 and bench_choice in bt_df.columns:
         day_ret = ret_array[i]
         daily_p_ret = np.dot(current_w, day_ret)
         
-        port_daily_returns_list[i] = daily_p_ret # 直接存下每一天的真實報酬率
+        port_daily_returns_list[i] = daily_p_ret 
         port_nav[i] = (1.0 * (1 + daily_p_ret)) if i == 0 else (port_nav[i-1] * (1 + daily_p_ret))
         
         if (1 + daily_p_ret) == 0:
@@ -463,14 +462,13 @@ if len(bt_df) > 10 and len(valid_assets) > 0 and bench_choice in bt_df.columns:
     mdd = ((cum_port / cum_port.cummax()) - 1).min()
     bench_mdd = ((cum_bench / cum_bench.cummax()) - 1).min()
     
-    # 使用迴圈中記錄的真實陣列，保證與基準大盤資料列長度絕對一致
+    # 這裡重新使用記錄的陣列，保證和基準長度百分百一致
     port_daily_ret_series = pd.Series(port_daily_returns_list, index=bt_ret.index)
     bt_vol = port_daily_ret_series.std() * np.sqrt(252)
     bench_vol = bt_ret[bench_choice].std() * np.sqrt(252)
     sharpe = (cagr - 0.04) / bt_vol if bt_vol > 0 else 0
     bench_sharpe = (bench_cagr - 0.04) / bench_vol if bench_vol > 0 else 0
     
-    # 長度與索引完全吻合後，進行純數學運算
     p_series = port_daily_ret_series.values
     b_series = bt_ret[bench_choice].values
     
@@ -557,4 +555,4 @@ with st.expander("🔍 歷史回撤與觸發除錯檢視 (Data Inspector)"):
         st.write("資料不齊全，無法顯示除錯表。")
 
 # 標示版本號 (放置於頁尾)
-st.markdown('<div class="version-footer">Powered by Pure Alpha Quantitative Engine | Version 8.8.15 (All-in-One Fix Build)</div>', unsafe_allow_html=True)
+st.markdown('<div class="version-footer">Powered by Pure Alpha Quantitative Engine | Version 8.8.16 (Anchor Date Drift Build)</div>', unsafe_allow_html=True)
