@@ -162,7 +162,7 @@ else:
     tvm_bull, tvm_mid, tvm_bear = 18.0, 15.0, 9.0
 
 st.sidebar.markdown("---")
-k_value = st.sidebar.slider("靜態縮放 K 值 (未啟用 TVM 時)", 0.500, 1.500, 1.137, step=0.001)
+k_value = st.sidebar.slider("靜態縮放 K 值 (未啟用 TVM 時，也是抄底時的強制 K 值)", 0.500, 1.500, 1.137, step=0.001)
 
 sim_core = st.sidebar.slider(f"{tk_core} 模擬/現價", 100.0, 900.0, latest_core, step=0.01)
 sim_ma200 = st.sidebar.slider(f"{tk_core} MA200 基準線", 100.0, 800.0, computed_ma200, step=0.01)
@@ -224,24 +224,24 @@ for i in range(len(df_all)):
 df_all['Regime'] = regime_states
 
 # ---------------------------------------------------------
-# 新增：三階段 TVM 動態 K 值計算 (Target Volatility)
+# 三階段 TVM 動態 K 值計算 (含抄底期間 TVM 強制暫停機制)
 # ---------------------------------------------------------
 if use_tvm:
     core_ret = df_all[tk_core].pct_change().fillna(0)
     core_vol = core_ret.rolling(window=window_choice).std() * np.sqrt(252) + 1e-6
     core_vol = core_vol.bfill()
     
-    # 根據核心資產與 MA200 的價格位階，切換不同的目標波動率
-    target_vol_array = np.full(len(df_all), tvm_mid / 100.0) # 預設中間值 15%
-    target_vol_array = np.where(df_all[tk_core] >= df_all['MA200'] * 1.04, tvm_bull / 100.0, target_vol_array) # 進攻區 18%
-    target_vol_array = np.where(df_all[tk_core] < df_all['MA200'] * 0.97, tvm_bear / 100.0, target_vol_array) # 防禦區 9%
-    target_vol_array = np.where(df_all['MA200'].isna(), tvm_bull / 100.0, target_vol_array) # 早期資料保護
+    target_vol_array = np.full(len(df_all), tvm_mid / 100.0) 
+    target_vol_array = np.where(df_all[tk_core] >= df_all['MA200'] * 1.04, tvm_bull / 100.0, target_vol_array) 
+    target_vol_array = np.where(df_all[tk_core] < df_all['MA200'] * 0.97, tvm_bear / 100.0, target_vol_array) 
+    target_vol_array = np.where(df_all['MA200'].isna(), tvm_bull / 100.0, target_vol_array) 
     
-    # 動態 Kt = 三階段目標波動率 / 當前核心資產波動率
     k_array = target_vol_array / core_vol.values
-    
-    # 信用貸款與融資極限防呆 (限制 K 值介於 0.5 到 1.8 之間)
     k_array = np.clip(k_array, 0.5, 1.8)
+    
+    # 【終極修復】：左側抄底 (Regime 19/30) 時強制暫停 TVM，使用靜態 K 值。
+    # 避免 TVM 因為股災導致的高波動率而暴力去槓桿，反而吃掉了抄底建立的部位。
+    k_array = np.where((df_all['Regime'] == 19) | (df_all['Regime'] == 30), k_value, k_array)
 else:
     k_array = np.full(len(df_all), k_value)
 
@@ -632,4 +632,4 @@ with st.expander("🔍 歷史回撤與觸發除錯檢視 (Data Inspector)"):
         st.write("資料不齊全，無法顯示除錯表。")
 
 # 標示版本號 (放置於頁尾)
-st.markdown('<div class="version-footer">Powered by Pure Alpha Quantitative Engine | Version 8.8.22 (3-Tier TVM Engine)</div>', unsafe_allow_html=True)
+st.markdown('<div class="version-footer">Powered by Pure Alpha Quantitative Engine | Version 8.8.23 (TVM Dip-Buy Override)</div>', unsafe_allow_html=True)
