@@ -175,7 +175,7 @@ dip_lv1_frac = dip_lv1 / 100.0
 dip_lv2_frac = dip_lv2 / 100.0
 
 # ==========================================
-# 4. 雙門檻 + 盤中觸價狀態機 
+# 4. 雙門檻 + 盤中觸價狀態機
 # ==========================================
 df_all['MA200'] = df_all[tk_core].rolling(200).mean()
 df_all['SPX_Max'] = df_all[h_col].cummax()
@@ -229,7 +229,7 @@ tgt_weights_df[tk_safe] = np.maximum(0, 1.0 - tgt_weights_df[[tk_core, tk_lev, t
 
 targets = (tgt_weights_df.loc[df_all.index[-1]] * 100).to_dict()
 
-# 動態實倉漂移引擎 
+# 動態實倉漂移引擎
 past_df = df_all.loc[df_all.index.date <= anchor_date, AVAILABLE_ASSETS]
 
 if not past_df.empty and not df_all.empty:
@@ -497,58 +497,48 @@ if len(bt_df) > 10 and len(valid_assets) > 0 and bench_choice in bt_df.columns:
     c6.metric("區間 Beta", f"{bt_beta:.2f}", "大盤 1.00", delta_color="off")
     
     # ---------------------------------------------------------
-    # 新增：各年度報酬率表現 (Annual Performance Table)
+    # 修正版：年度報酬率熱力圖 (使用 resample 確保索引穩健)
     # ---------------------------------------------------------
     st.markdown("<h3 style='color: #38bdf8; margin-top: 30px; font-size: 18px; border-bottom: 1px solid #24334d; padding-bottom: 10px;'>📊 各年度報酬率比較矩陣 (Annual Returns)</h3>", unsafe_allow_html=True)
     
-    # 準備用來計算年度報酬的 DataFrame
     annual_df = pd.DataFrame(index=cum_port.index)
     annual_df['Pure Alpha'] = cum_port
     annual_df[bench_choice] = cum_bench
     
-    # 將必要的比較標的也加進來，並計算它們在回測期間的累積淨值
     compare_tickers = ["QQQ", "SPY", tk_core]
     for ticker in set(compare_tickers):
         if ticker in df_all.columns and ticker != bench_choice:
-            # 確保取得的長度與回測區間一致
             t_ret = df_all.loc[bt_mask, ticker].pct_change().dropna()
-            # 對齊索引
             t_ret = t_ret.reindex(bt_ret.index).fillna(0)
             annual_df[ticker] = (1 + t_ret).cumprod()
 
-    # 抽取每年的最後一個交易日
-    annual_df['Year'] = annual_df.index.year
-    year_end_data = annual_df.groupby('Year').tail(1).set_index('Year')
+    # 使用 resample('Y').last()，這是最乾淨且保證不會出錯的年度資料提取法
+    year_end_data = annual_df.resample('YE').last()
     
-    # 手動補上第一年的起點 (數值為 1) 以便計算第一年的報酬率
-    first_year = annual_df['Year'].iloc[0]
-    base_data = pd.DataFrame(1.0, index=[first_year - 1], columns=year_end_data.columns)
+    # 產生第一年的起點 (都是 1.0)
+    base_date = pd.to_datetime(f"{year_end_data.index[0].year - 1}-12-31")
+    base_data = pd.DataFrame(1.0, index=[base_date], columns=year_end_data.columns)
     
-    # 合併並計算年度百分比變化
     yearly_nav = pd.concat([base_data, year_end_data])
     yearly_returns = yearly_nav.pct_change().dropna() * 100
     
-    # 整理表格順序
     cols_to_show = ['Pure Alpha', bench_choice]
     for ticker in ["QQQ", "SPY", tk_core]:
         if ticker in yearly_returns.columns and ticker not in cols_to_show:
             cols_to_show.append(ticker)
             
     yearly_returns = yearly_returns[cols_to_show].round(2)
+    # 將 datetime index 轉為單純的年份字串
+    yearly_returns.index = yearly_returns.index.year.astype(str)
     
-    # 將 index (年份) 轉為字串避免千分位逗號
-    yearly_returns.index = yearly_returns.index.astype(int).astype(str)
-    
-    # 轉置表格，讓年份橫向排列 (更像專業研報)
     yearly_returns_t = yearly_returns.T
     
-    # 透過 Streamlit 的 style 功能加上熱力圖漸層
     st.dataframe(
         yearly_returns_t.style.background_gradient(cmap='RdYlGn', axis=None, vmin=-40, vmax=40).format("{:.2f}%"),
         use_container_width=True
     )
     # ---------------------------------------------------------
-    
+
     bull_days = np.sum(df_all.loc[bt_mask, 'Regime'] == 1)
     dip_days = np.sum((df_all.loc[bt_mask, 'Regime'] == 19) | (df_all.loc[bt_mask, 'Regime'] == 30))
     bear_days = np.sum(df_all.loc[bt_mask, 'Regime'] == 0)
@@ -609,4 +599,4 @@ with st.expander("🔍 歷史回撤與觸發除錯檢視 (Data Inspector)"):
         st.write("資料不齊全，無法顯示除錯表。")
 
 # 標示版本號 (放置於頁尾)
-st.markdown('<div class="version-footer">Powered by Pure Alpha Quantitative Engine | Version 8.8.19 (Annual Heatmap Build)</div>', unsafe_allow_html=True)
+st.markdown('<div class="version-footer">Powered by Pure Alpha Quantitative Engine | Version 8.8.20 (Robust Annual Heatmap Build)</div>', unsafe_allow_html=True)
