@@ -60,7 +60,7 @@ ASSET_ROLES = {tk_core: "核心成長引擎", tk_lev: "動能槓桿放大", tk_b
 CHART_COLORS = {tk_core: "#38bdf8", tk_lev: "#818cf8", tk_bond: "#f472b6", tk_gold: "#facc15", tk_usd: "#ef4444", tk_safe: "#94a3b8"}
 
 # ==========================================
-# 2. 核心資料下載引擎
+# 2. 核心資料下載引擎 
 # ==========================================
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_data(tickers_tuple):
@@ -150,9 +150,22 @@ aw_safe = col_w2.number_input(f"{tk_safe}", value=12.18, step=0.1)
 ANCHOR_WEIGHTS = {tk_core: aw_core, tk_lev: aw_lev, tk_bond: aw_bond, tk_gold: aw_gold, tk_usd: aw_usd, tk_safe: aw_safe}
 
 st.sidebar.markdown("---")
+
+# --- 三階段目標波動率管理 (TVM) 引擎介面 ---
+st.sidebar.markdown("<h3 style='color:#facc15;'>🎯 三階段目標波動率引擎 (TVM)</h3>", unsafe_allow_html=True)
+use_tvm = st.sidebar.checkbox("啟動歷史動態 K 值 (TVM 回測)", value=True)
+if use_tvm:
+    tvm_bull = st.sidebar.number_input("進攻區 (>1.04 MA) 波動率 (%)", value=18.0, step=0.5)
+    tvm_mid  = st.sidebar.number_input("震盪區 (0.97~1.04) 波動率 (%)", value=15.0, step=0.5)
+    tvm_bear = st.sidebar.number_input("防禦區 (<0.97 MA) 波動率 (%)", value=9.0, step=0.5)
+else:
+    tvm_bull, tvm_mid, tvm_bear = 18.0, 15.0, 9.0
+
+st.sidebar.markdown("---")
+k_value = st.sidebar.slider("靜態縮放 K 值 (未啟用 TVM 時)", 0.500, 1.500, 1.137, step=0.001)
+
 sim_core = st.sidebar.slider(f"{tk_core} 模擬/現價", 100.0, 900.0, latest_core, step=0.01)
 sim_ma200 = st.sidebar.slider(f"{tk_core} MA200 基準線", 100.0, 800.0, computed_ma200, step=0.01)
-k_value = st.sidebar.slider("動態縮放 K 值", 0.500, 1.500, 1.137, step=0.001)
 threshold = st.sidebar.slider("最小換倉門檻 (%)", 0.5, 5.0, 2.0, step=0.1)
 
 st.sidebar.markdown("<h3 style='color:#facc15;'>左側抄底門檻設定</h3>", unsafe_allow_html=True)
@@ -175,7 +188,7 @@ dip_lv1_frac = dip_lv1 / 100.0
 dip_lv2_frac = dip_lv2 / 100.0
 
 # ==========================================
-# 4. 雙門檻 + 盤中觸價狀態機
+# 4. 雙門檻 + 盤中觸價狀態機 + TVM 動態 K 值陣列
 # ==========================================
 df_all['MA200'] = df_all[tk_core].rolling(200).mean()
 df_all['SPX_Max'] = df_all[h_col].cummax()
@@ -210,9 +223,33 @@ for i in range(len(df_all)):
 
 df_all['Regime'] = regime_states
 
-mult_core_lev = k_value
-mult_bond_gold = 1.0 + (k_value - 1) * 0.525
-mult_usd = 2.0 - k_value
+# ---------------------------------------------------------
+# 新增：三階段 TVM 動態 K 值計算 (Target Volatility)
+# ---------------------------------------------------------
+if use_tvm:
+    core_ret = df_all[tk_core].pct_change().fillna(0)
+    core_vol = core_ret.rolling(window=window_choice).std() * np.sqrt(252) + 1e-6
+    core_vol = core_vol.bfill()
+    
+    # 根據核心資產與 MA200 的價格位階，切換不同的目標波動率
+    target_vol_array = np.full(len(df_all), tvm_mid / 100.0) # 預設中間值 15%
+    target_vol_array = np.where(df_all[tk_core] >= df_all['MA200'] * 1.04, tvm_bull / 100.0, target_vol_array) # 進攻區 18%
+    target_vol_array = np.where(df_all[tk_core] < df_all['MA200'] * 0.97, tvm_bear / 100.0, target_vol_array) # 防禦區 9%
+    target_vol_array = np.where(df_all['MA200'].isna(), tvm_bull / 100.0, target_vol_array) # 早期資料保護
+    
+    # 動態 Kt = 三階段目標波動率 / 當前核心資產波動率
+    k_array = target_vol_array / core_vol.values
+    
+    # 信用貸款與融資極限防呆 (限制 K 值介於 0.5 到 1.8 之間)
+    k_array = np.clip(k_array, 0.5, 1.8)
+else:
+    k_array = np.full(len(df_all), k_value)
+
+current_applied_k = k_array[-1]
+
+mult_core_lev = k_array
+mult_bond_gold = 1.0 + (k_array - 1) * 0.525
+mult_usd = 2.0 - k_array
 
 tgt_weights_df = pd.DataFrame(index=df_all.index)
 tgt_weights_df[tk_core] = np.where(df_all['Regime'] == 0, BEAR_BASE[tk_core]/100.0, (BULL_BASE[tk_core]/100.0) * mult_core_lev)
@@ -221,15 +258,17 @@ tgt_weights_df[tk_gold] = np.where(df_all['Regime'] == 0, BEAR_BASE[tk_gold]/100
 tgt_weights_df[tk_usd]  = np.where(df_all['Regime'] == 0, BEAR_BASE[tk_usd]/100.0,  (BULL_BASE[tk_usd]/100.0) * mult_usd)
 
 tgt_weights_df[tk_lev] = 0.0
-tgt_weights_df.loc[df_all['Regime'] == 1,  tk_lev] = (BULL_BASE[tk_lev]/100.0) * mult_core_lev
-tgt_weights_df.loc[df_all['Regime'] == 19, tk_lev] = 0.15 * mult_core_lev
-tgt_weights_df.loc[df_all['Regime'] == 30, tk_lev] = 0.25 * mult_core_lev
+tgt_weights_df.loc[df_all['Regime'] == 1,  tk_lev] = (BULL_BASE[tk_lev]/100.0) * mult_core_lev[df_all['Regime'] == 1]
+tgt_weights_df.loc[df_all['Regime'] == 19, tk_lev] = 0.15 * mult_core_lev[df_all['Regime'] == 19]
+tgt_weights_df.loc[df_all['Regime'] == 30, tk_lev] = 0.25 * mult_core_lev[df_all['Regime'] == 30]
 
 tgt_weights_df[tk_safe] = np.maximum(0, 1.0 - tgt_weights_df[[tk_core, tk_lev, tk_bond, tk_gold, tk_usd]].sum(axis=1))
 
 targets = (tgt_weights_df.loc[df_all.index[-1]] * 100).to_dict()
 
+# ---------------------------------------------------------
 # 動態實倉漂移引擎
+# ---------------------------------------------------------
 past_df = df_all.loc[df_all.index.date <= anchor_date, AVAILABLE_ASSETS]
 
 if not past_df.empty and not df_all.empty:
@@ -309,8 +348,10 @@ with col2:
             p_beta = 0.0
             
         risk_status = '<span class="c-green">進攻效能優異 (RISK ON)</span>' if p_beta > 0.7 else '<span class="c-red">避險防禦狀態 (RISK OFF)</span>'
+        
+        k_label = "當前 TVM 動態 K 值" if use_tvm else "當前靜態設定 K 值"
     else:
-        p_vol, p_beta = 0.0, 0.0
+        p_vol, p_beta, current_applied_k, k_label = 0.0, 0.0, 0.0, "資料不足"
         risk_status = "資料不足"
         
     html_card2 = f"""
@@ -318,7 +359,7 @@ with col2:
         <h2>Portfolio Risk Engine ({window_choice}D)</h2>
         <div class="metric-row"><span class="m-label">預估組合年化波動率</span><span class="m-value c-green">{p_vol*100:.2f}%</span></div>
         <div class="metric-row"><span class="m-label">預估組合 Beta (vs {bench_choice})</span><span class="m-value c-yellow">{p_beta:.2f}</span></div>
-        <div class="metric-row"><span class="m-label">遲滯上緣 (右側回補線)</span><span class="m-value c-green">{sim_ma200 * 1.04:.2f}</span></div>
+        <div class="metric-row"><span class="m-label">{k_label}</span><span class="m-value c-green">{current_applied_k:.3f}</span></div>
         <div class="metric-row"><span class="m-label">風控安全評級</span><span class="m-value">{risk_status}</span></div>
     </div>
     """
@@ -496,9 +537,6 @@ if len(bt_df) > 10 and len(valid_assets) > 0 and bench_choice in bt_df.columns:
     c5.metric("夏普指標", f"{sharpe:.2f}", f"大盤 {bench_sharpe:.2f}")
     c6.metric("區間 Beta", f"{bt_beta:.2f}", "大盤 1.00", delta_color="off")
     
-    # ---------------------------------------------------------
-    # 修正版：年度報酬率熱力圖 (使用 resample 確保索引穩健)
-    # ---------------------------------------------------------
     st.markdown("<h3 style='color: #38bdf8; margin-top: 30px; font-size: 18px; border-bottom: 1px solid #24334d; padding-bottom: 10px;'>📊 各年度報酬率比較矩陣 (Annual Returns)</h3>", unsafe_allow_html=True)
     
     annual_df = pd.DataFrame(index=cum_port.index)
@@ -512,10 +550,8 @@ if len(bt_df) > 10 and len(valid_assets) > 0 and bench_choice in bt_df.columns:
             t_ret = t_ret.reindex(bt_ret.index).fillna(0)
             annual_df[ticker] = (1 + t_ret).cumprod()
 
-    # 使用 resample('Y').last()，這是最乾淨且保證不會出錯的年度資料提取法
     year_end_data = annual_df.resample('YE').last()
     
-    # 產生第一年的起點 (都是 1.0)
     base_date = pd.to_datetime(f"{year_end_data.index[0].year - 1}-12-31")
     base_data = pd.DataFrame(1.0, index=[base_date], columns=year_end_data.columns)
     
@@ -528,17 +564,14 @@ if len(bt_df) > 10 and len(valid_assets) > 0 and bench_choice in bt_df.columns:
             cols_to_show.append(ticker)
             
     yearly_returns = yearly_returns[cols_to_show].round(2)
-    # 將 datetime index 轉為單純的年份字串
     yearly_returns.index = yearly_returns.index.year.astype(str)
-    
     yearly_returns_t = yearly_returns.T
     
     st.dataframe(
         yearly_returns_t.style.background_gradient(cmap='RdYlGn', axis=None, vmin=-40, vmax=40).format("{:.2f}%"),
         use_container_width=True
     )
-    # ---------------------------------------------------------
-
+    
     bull_days = np.sum(df_all.loc[bt_mask, 'Regime'] == 1)
     dip_days = np.sum((df_all.loc[bt_mask, 'Regime'] == 19) | (df_all.loc[bt_mask, 'Regime'] == 30))
     bear_days = np.sum(df_all.loc[bt_mask, 'Regime'] == 0)
@@ -599,4 +632,4 @@ with st.expander("🔍 歷史回撤與觸發除錯檢視 (Data Inspector)"):
         st.write("資料不齊全，無法顯示除錯表。")
 
 # 標示版本號 (放置於頁尾)
-st.markdown('<div class="version-footer">Powered by Pure Alpha Quantitative Engine | Version 8.8.20 (Robust Annual Heatmap Build)</div>', unsafe_allow_html=True)
+st.markdown('<div class="version-footer">Powered by Pure Alpha Quantitative Engine | Version 8.8.22 (3-Tier TVM Engine)</div>', unsafe_allow_html=True)
