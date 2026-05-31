@@ -60,7 +60,7 @@ ASSET_ROLES = {tk_core: "核心成長引擎", tk_lev: "動能槓桿放大", tk_b
 CHART_COLORS = {tk_core: "#38bdf8", tk_lev: "#818cf8", tk_bond: "#f472b6", tk_gold: "#facc15", tk_usd: "#ef4444", tk_safe: "#94a3b8"}
 
 # ==========================================
-# 2. 核心資料下載引擎 
+# 2. 核心資料下載引擎 (內建 SHY 遠期代理縫合)
 # ==========================================
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_data(tickers_tuple):
@@ -99,7 +99,8 @@ def load_data(tickers_tuple):
         return pd.concat(data_dict, axis=1)
     return pd.DataFrame()
 
-fetch_list = tuple(set(PORTFOLIO_ASSETS + ["SPY", "QQQ"]))
+# 偷偷把 SHY 加進下載清單中，為 SGOV 準備替身
+fetch_list = tuple(set(PORTFOLIO_ASSETS + ["SPY", "QQQ", "SHY"]))
 
 with st.spinner('正在從 Yahoo Finance 同步長期歷史市場數據...'):
     raw_df_all = load_data(fetch_list)
@@ -113,6 +114,21 @@ if raw_df_all.empty:
 if tk_core not in raw_df_all.columns:
     st.error(f"🚨 核心標的 '{tk_core}' 下載失敗！無法執行策略計算。")
     st.stop()
+
+# ---------------------------------------------------------
+# ✨ 黑科技：SHY 遠期代理無縫縫合模型
+# ---------------------------------------------------------
+if "SGOV" in raw_df_all.columns and "SHY" in raw_df_all.columns:
+    sgov_first_idx = raw_df_all["SGOV"].first_valid_index()
+    if sgov_first_idx is not None:
+        sgov_base_price = raw_df_all.loc[sgov_first_idx, "SGOV"]
+        shy_base_price = raw_df_all.loc[sgov_first_idx, "SHY"]
+        
+        if pd.notna(sgov_base_price) and pd.notna(shy_base_price) and shy_base_price > 0:
+            ratio = sgov_base_price / shy_base_price
+            shy_history = raw_df_all.loc[:sgov_first_idx, "SHY"]
+            raw_df_all.loc[:sgov_first_idx, "SGOV"] = shy_history * ratio
+# ---------------------------------------------------------
 
 spx_col = '^GSPC' if '^GSPC' in raw_df_all.columns else 'SPY'
 if spx_col == '^GSPC':
@@ -151,7 +167,6 @@ ANCHOR_WEIGHTS = {tk_core: aw_core, tk_lev: aw_lev, tk_bond: aw_bond, tk_gold: a
 
 st.sidebar.markdown("---")
 
-# --- 三階段目標波動率管理 (TVM) 引擎介面 ---
 st.sidebar.markdown("<h3 style='color:#facc15;'>🎯 三階段目標波動率引擎 (TVM)</h3>", unsafe_allow_html=True)
 use_tvm = st.sidebar.checkbox("啟動歷史動態 K 值 (TVM 回測)", value=True)
 if use_tvm:
@@ -161,12 +176,17 @@ if use_tvm:
 else:
     tvm_bull, tvm_mid, tvm_bear = 18.0, 15.0, 9.0
 
+# ---------------------------------------------------------
+# 新增：執行與再平衡頻率設定
+# ---------------------------------------------------------
 st.sidebar.markdown("---")
+st.sidebar.markdown("<h3 style='color:#facc15;'>⚙️ 執行與再平衡設定</h3>", unsafe_allow_html=True)
+reb_freq = st.sidebar.selectbox("例行確認頻率 (事件觸發時將無視此設定強制執行)", ["每日確認 (Daily)", "每週確認 (Weekly)"], index=1)
+threshold = st.sidebar.slider("最小換倉門檻 (%)", 0.5, 5.0, 2.0, step=0.1)
 k_value = st.sidebar.slider("靜態縮放 K 值 (未啟用 TVM 時，也是抄底時的強制 K 值)", 0.500, 1.500, 1.137, step=0.001)
 
 sim_core = st.sidebar.slider(f"{tk_core} 模擬/現價", 100.0, 900.0, latest_core, step=0.01)
 sim_ma200 = st.sidebar.slider(f"{tk_core} MA200 基準線", 100.0, 800.0, computed_ma200, step=0.01)
-threshold = st.sidebar.slider("最小換倉門檻 (%)", 0.5, 5.0, 2.0, step=0.1)
 
 st.sidebar.markdown("<h3 style='color:#facc15;'>左側抄底門檻設定</h3>", unsafe_allow_html=True)
 dip_lv1 = st.sidebar.slider("Lv1 抄底門檻 (%)", 10.0, 25.0, 19.0, step=0.1) 
@@ -223,9 +243,6 @@ for i in range(len(df_all)):
 
 df_all['Regime'] = regime_states
 
-# ---------------------------------------------------------
-# 三階段 TVM 動態 K 值計算 (含抄底期間 TVM 強制暫停機制)
-# ---------------------------------------------------------
 if use_tvm:
     core_ret = df_all[tk_core].pct_change().fillna(0)
     core_vol = core_ret.rolling(window=window_choice).std() * np.sqrt(252) + 1e-6
@@ -239,8 +256,6 @@ if use_tvm:
     k_array = target_vol_array / core_vol.values
     k_array = np.clip(k_array, 0.5, 1.8)
     
-    # 【終極修復】：左側抄底 (Regime 19/30) 時強制暫停 TVM，使用靜態 K 值。
-    # 避免 TVM 因為股災導致的高波動率而暴力去槓桿，反而吃掉了抄底建立的部位。
     k_array = np.where((df_all['Regime'] == 19) | (df_all['Regime'] == 30), k_value, k_array)
 else:
     k_array = np.full(len(df_all), k_value)
@@ -468,6 +483,7 @@ if len(bt_df) > 10 and len(valid_assets) > 0 and bench_choice in bt_df.columns:
     
     ret_array = bt_ret[valid_assets].values
     tgt_array = tgt_weights_sub[valid_assets].values
+    bt_regimes = df_all.loc[bt_ret.index, 'Regime'].values
     
     current_w = tgt_array[0].copy()
     threshold_frac = threshold / 100.0
@@ -487,11 +503,27 @@ if len(bt_df) > 10 and len(valid_assets) > 0 and bench_choice in bt_df.columns:
         
         if i < n_days - 1:
             tgt_w = tgt_array[i+1]
-            deviations = np.abs(drifted_w - tgt_w)
-            if np.max(deviations) >= threshold_frac:
-                current_w = tgt_w.copy()
-                rebalance_count += 1
+            
+            # --- 新增：事件驅動與每週例行再平衡邏輯 ---
+            if reb_freq == "每週確認 (Weekly)":
+                curr_week = bt_ret.index[i].isocalendar()[1]
+                next_week = bt_ret.index[i+1].isocalendar()[1]
+                is_routine_check = (curr_week != next_week) # 週末換週時觸發
             else:
+                is_routine_check = True # 每日檢查
+                
+            # 事件驅動覆寫 (Event Override): 破線或抄底，強迫當日換倉
+            is_event_override = (bt_regimes[i+1] != bt_regimes[i])
+            
+            if is_routine_check or is_event_override:
+                deviations = np.abs(drifted_w - tgt_w)
+                if np.max(deviations) >= threshold_frac or is_event_override:
+                    current_w = tgt_w.copy()
+                    rebalance_count += 1
+                else:
+                    current_w = drifted_w.copy()
+            else:
+                # 平日慵懶模式，任由權重漂移累積獲利
                 current_w = drifted_w.copy()
                 
     cum_port = pd.Series(port_nav, index=bt_ret.index)
@@ -608,7 +640,7 @@ if len(bt_df) > 10 and len(valid_assets) > 0 and bench_choice in bt_df.columns:
             <p style="margin-bottom: 5px;"><b>📌 系統動力學診斷：</b></p>
             <ul style="margin-top: 0; margin-bottom: 15px;">
                 <li><b>再平衡成本損耗 (Rebalance Friction)：</b><br>
-                在 <b>{threshold:.1f}%</b> 的容忍門檻下，觸發真實調倉 <b>{rebalance_count}</b> 次 (平均每 {avg_reb_days} 天一次)。</li>
+                在 <b>{threshold:.1f}%</b> 的容忍門檻與 <b>{reb_freq}</b> 模式下，觸發真實調倉 <b>{rebalance_count}</b> 次 (平均每 {avg_reb_days} 天一次)。事件驅動與例行檢查完美結合，極大化降低了摩擦成本。</li>
                 {beta_diag}
                 {rebalance_count == 0 and "" or mdd_diag}
             </ul>
@@ -632,4 +664,4 @@ with st.expander("🔍 歷史回撤與觸發除錯檢視 (Data Inspector)"):
         st.write("資料不齊全，無法顯示除錯表。")
 
 # 標示版本號 (放置於頁尾)
-st.markdown('<div class="version-footer">Powered by Pure Alpha Quantitative Engine | Version 8.8.23 (TVM Dip-Buy Override)</div>', unsafe_allow_html=True)
+st.markdown('<div class="version-footer">Powered by Pure Alpha Quantitative Engine | Version 8.8.25 (Event-Driven Weekly Rebalance)</div>', unsafe_allow_html=True)
