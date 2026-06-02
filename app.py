@@ -54,13 +54,16 @@ with st.sidebar.expander("⚙️ 自訂資產代碼 (ETF Tickers)", expanded=Fal
 
 PORTFOLIO_ASSETS = [tk_core, tk_lev, tk_bond, tk_gold, tk_usd, tk_safe]
 
+# 新增：讓使用者自行決定是否要啟用背景資料縫合 (預設關閉，保持資料純淨)
+use_proxy = st.sidebar.checkbox("🧬 啟用 SGOV 歷史資料縫合 (使用 SHY 填補 2020 年前數據)", value=False)
+
 BULL_BASE = {tk_core: 26.0, tk_lev: 32.0, tk_bond: 7.0, tk_gold: 7.0, tk_usd: 9.0}
 BEAR_BASE = {tk_core: 20.0, tk_lev: 20.0, tk_bond: 10.0, tk_gold: 10.0, tk_usd: 20.0}
 ASSET_ROLES = {tk_core: "核心成長引擎", tk_lev: "動能槓桿放大", tk_bond: "長債負相關避險", tk_gold: "抗通膨終極防禦", tk_usd: "美元流動性避險", tk_safe: "流動性海綿池"}
 CHART_COLORS = {tk_core: "#38bdf8", tk_lev: "#818cf8", tk_bond: "#f472b6", tk_gold: "#facc15", tk_usd: "#ef4444", tk_safe: "#94a3b8"}
 
 # ==========================================
-# 2. 核心資料下載引擎 (內建 SHY 遠期代理縫合)
+# 2. 核心資料下載引擎 
 # ==========================================
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_data(tickers_tuple):
@@ -99,8 +102,11 @@ def load_data(tickers_tuple):
         return pd.concat(data_dict, axis=1)
     return pd.DataFrame()
 
-# 偷偷把 SHY 加進下載清單中，為 SGOV 準備替身
-fetch_list = tuple(set(PORTFOLIO_ASSETS + ["SPY", "QQQ", "SHY"]))
+# 根據使用者的選擇決定是否要下載 SHY 來當替身
+fetch_list_base = PORTFOLIO_ASSETS + ["SPY", "QQQ"]
+if use_proxy and tk_safe == "SGOV":
+    fetch_list_base.append("SHY")
+fetch_list = tuple(set(fetch_list_base))
 
 with st.spinner('正在從 Yahoo Finance 同步長期歷史市場數據...'):
     raw_df_all = load_data(fetch_list)
@@ -116,9 +122,9 @@ if tk_core not in raw_df_all.columns:
     st.stop()
 
 # ---------------------------------------------------------
-# ✨ 黑科技：SHY 遠期代理無縫縫合模型
+# 可控開關：SHY 遠期代理縫合模型
 # ---------------------------------------------------------
-if "SGOV" in raw_df_all.columns and "SHY" in raw_df_all.columns:
+if use_proxy and tk_safe == "SGOV" and "SGOV" in raw_df_all.columns and "SHY" in raw_df_all.columns:
     sgov_first_idx = raw_df_all["SGOV"].first_valid_index()
     if sgov_first_idx is not None:
         sgov_base_price = raw_df_all.loc[sgov_first_idx, "SGOV"]
@@ -177,7 +183,7 @@ else:
     tvm_bull, tvm_mid, tvm_bear = 18.0, 15.0, 9.0
 
 # ---------------------------------------------------------
-# 新增：執行與再平衡頻率設定
+# 執行與再平衡頻率設定
 # ---------------------------------------------------------
 st.sidebar.markdown("---")
 st.sidebar.markdown("<h3 style='color:#facc15;'>⚙️ 執行與再平衡設定</h3>", unsafe_allow_html=True)
@@ -504,15 +510,13 @@ if len(bt_df) > 10 and len(valid_assets) > 0 and bench_choice in bt_df.columns:
         if i < n_days - 1:
             tgt_w = tgt_array[i+1]
             
-            # --- 新增：事件驅動與每週例行再平衡邏輯 ---
             if reb_freq == "每週確認 (Weekly)":
                 curr_week = bt_ret.index[i].isocalendar()[1]
                 next_week = bt_ret.index[i+1].isocalendar()[1]
-                is_routine_check = (curr_week != next_week) # 週末換週時觸發
+                is_routine_check = (curr_week != next_week)
             else:
-                is_routine_check = True # 每日檢查
+                is_routine_check = True
                 
-            # 事件驅動覆寫 (Event Override): 破線或抄底，強迫當日換倉
             is_event_override = (bt_regimes[i+1] != bt_regimes[i])
             
             if is_routine_check or is_event_override:
@@ -523,7 +527,6 @@ if len(bt_df) > 10 and len(valid_assets) > 0 and bench_choice in bt_df.columns:
                 else:
                     current_w = drifted_w.copy()
             else:
-                # 平日慵懶模式，任由權重漂移累積獲利
                 current_w = drifted_w.copy()
                 
     cum_port = pd.Series(port_nav, index=bt_ret.index)
@@ -664,4 +667,4 @@ with st.expander("🔍 歷史回撤與觸發除錯檢視 (Data Inspector)"):
         st.write("資料不齊全，無法顯示除錯表。")
 
 # 標示版本號 (放置於頁尾)
-st.markdown('<div class="version-footer">Powered by Pure Alpha Quantitative Engine | Version 8.8.25 (Event-Driven Weekly Rebalance)</div>', unsafe_allow_html=True)
+st.markdown('<div class="version-footer">Powered by Pure Alpha Quantitative Engine | Version 8.8.26 (Pure Data / White-Box Build)</div>', unsafe_allow_html=True)
