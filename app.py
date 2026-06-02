@@ -572,6 +572,35 @@ if len(bt_df) > 10 and len(valid_assets) > 0 and bench_choice in bt_df.columns:
     c5.metric("夏普指標", f"{sharpe:.2f}", f"大盤 {bench_sharpe:.2f}")
     c6.metric("區間 Beta", f"{bt_beta:.2f}", "大盤 1.00", delta_color="off")
     
+    # ---------------------------------------------------------
+    # 新增：各個資產的資金淨值成長趨勢線圖
+    # ---------------------------------------------------------
+    st.markdown("<h3 style='color: #38bdf8; margin-top: 30px; font-size: 18px; border-bottom: 1px solid #24334d; padding-bottom: 10px;'>📈 各別資產資金淨值走勢 (Asset Performance)</h3>", unsafe_allow_html=True)
+    
+    fig_assets = go.Figure()
+    asset_cum_ret = (1 + bt_ret[valid_assets]).cumprod()
+    
+    for asset in valid_assets:
+        fig_assets.add_trace(go.Scatter(
+            x=asset_cum_ret.index, 
+            y=asset_cum_ret[asset].values, 
+            mode='lines', 
+            name=asset, 
+            line=dict(color=CHART_COLORS.get(asset, "#94a3b8"), width=1.5)
+        ))
+        
+    fig_assets.update_layout(
+        template='plotly_dark', 
+        paper_bgcolor='rgba(0,0,0,0)', 
+        plot_bgcolor='rgba(0,0,0,0)', 
+        margin=dict(l=60, r=20, t=20, b=40), 
+        height=350, 
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1), 
+        yaxis_title="累積資金淨值 (基準=1.0)"
+    )
+    st.plotly_chart(fig_assets, use_container_width=True)
+
+    
     st.markdown("<h3 style='color: #38bdf8; margin-top: 30px; font-size: 18px; border-bottom: 1px solid #24334d; padding-bottom: 10px;'>📊 各年度報酬率比較矩陣 (Annual Returns)</h3>", unsafe_allow_html=True)
     
     annual_df = pd.DataFrame(index=cum_port.index)
@@ -667,4 +696,4 @@ with st.expander("🔍 歷史回撤與觸發除錯檢視 (Data Inspector)"):
         st.write("資料不齊全，無法顯示除錯表。")
 
 # 標示版本號 (放置於頁尾)
-st.markdown('<div class="version-footer">Powered by Pure Alpha Quantitative Engine | Version 8.8.26 (Pure Data / White-Box Build)</div>', unsafe_allow_html=True)
+st.markdown('<div class="version-footer">Powered by Pure Alpha Quantitative Engine | Version 8.8.27 (Asset Perf Chart Build)</div>', unsafe_allow_html=True)
