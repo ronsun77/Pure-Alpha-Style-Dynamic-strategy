@@ -54,7 +54,7 @@ with st.sidebar.expander("⚙️ 自訂資產代碼 (ETF Tickers)", expanded=Fal
 
 PORTFOLIO_ASSETS = [tk_core, tk_lev, tk_bond, tk_gold, tk_usd, tk_safe]
 
-# 新增：讓使用者自行決定是否要啟用背景資料縫合 (預設關閉，保持資料純淨)
+# 讓使用者自行決定是否要啟用背景資料縫合 (預設關閉，保持資料純淨)
 use_proxy = st.sidebar.checkbox("🧬 啟用 SGOV 歷史資料縫合 (使用 SHY 填補 2020 年前數據)", value=False)
 
 BULL_BASE = {tk_core: 26.0, tk_lev: 32.0, tk_bond: 7.0, tk_gold: 7.0, tk_usd: 9.0}
@@ -137,6 +137,8 @@ if use_proxy and tk_safe == "SGOV" and "SGOV" in raw_df_all.columns and "SHY" in
 # ---------------------------------------------------------
 
 spx_col = '^GSPC' if '^GSPC' in raw_df_all.columns else 'SPY'
+spx_display_name = "SPX (標普大盤)" if spx_col == '^GSPC' else "SPY (基準大盤)"
+
 if spx_col == '^GSPC':
     h_col, l_col = 'SPX_High', 'SPX_Low'
 else:
@@ -309,7 +311,44 @@ if not past_df.empty and not df_all.empty:
 else:
     CURRENT_WEIGHTS = ANCHOR_WEIGHTS.copy()
 
-# UI 盤中狀態判定
+# ==========================================
+# 5. 前端總覽面板渲染與今日速報
+# ==========================================
+st.markdown("<h1 style='color:white; font-weight:bold;'>Pure Alpha 多資產對沖策略戰情室</h1>", unsafe_allow_html=True)
+
+# ---------------------------------------------------------
+# ✨ 新增功能：今日盤勢速報 (Daily Performance Tracker)
+# ---------------------------------------------------------
+latest_daily_returns = df_all.pct_change().iloc[-1]
+qqq_day_ret = latest_daily_returns.get('QQQ', 0.0) * 100
+spy_day_ret = latest_daily_returns.get(spx_col, 0.0) * 100
+
+# 根據當前動態漂移後的實倉比例，推算今日策略組合總報酬
+w_today = np.array([CURRENT_WEIGHTS.get(a, 0) / 100.0 for a in AVAILABLE_ASSETS])
+port_day_ret = np.dot(w_today, latest_daily_returns[AVAILABLE_ASSETS].fillna(0).values) * 100
+
+qqq_color = "c-green" if qqq_day_ret >= 0 else "c-red"
+spy_color = "c-green" if spy_day_ret >= 0 else "c-red"
+port_color = "c-green" if port_day_ret >= 0 else "c-red"
+
+st.markdown(f"""
+<div style="display: flex; gap: 20px; margin-bottom: 25px;">
+    <div class="cyber-card" style="flex: 1; text-align: center; padding: 15px; margin-bottom: 0; border-top: 3px solid #38bdf8;">
+        <div style="color: #94a3b8; font-size: 14px; margin-bottom: 5px;">Pure Alpha 策略組合 本日漲跌</div>
+        <div style="font-size: 26px; font-weight: bold; font-family: monospace;" class="{port_color}">{port_day_ret:+.2f}%</div>
+    </div>
+    <div class="cyber-card" style="flex: 1; text-align: center; padding: 15px; margin-bottom: 0; border-top: 3px solid #64748b;">
+        <div style="color: #94a3b8; font-size: 14px; margin-bottom: 5px;">QQQ (科技核心) 本日漲跌</div>
+        <div style="font-size: 26px; font-weight: bold; font-family: monospace;" class="{qqq_color}">{qqq_day_ret:+.2f}%</div>
+    </div>
+    <div class="cyber-card" style="flex: 1; text-align: center; padding: 15px; margin-bottom: 0; border-top: 3px solid #64748b;">
+        <div style="color: #94a3b8; font-size: 14px; margin-bottom: 5px;">{spx_display_name} 本日漲跌</div>
+        <div style="font-size: 26px; font-weight: bold; font-family: monospace;" class="{spy_color}">{spy_day_ret:+.2f}%</div>
+    </div>
+</div>
+""", unsafe_allow_html=True)
+# ---------------------------------------------------------
+
 current_spx_dd = df_all['SPX_DD'].iloc[-1]
 last_state = df_all['Regime'].iloc[-2] if len(df_all) > 1 else 1
 
@@ -330,10 +369,6 @@ else:
 
 ratio = sim_core / sim_ma200 if sim_ma200 > 0 else 1.0
 
-# ==========================================
-# 5. 前端總覽面板渲染
-# ==========================================
-st.markdown("<h1 style='color:white; font-weight:bold;'>Pure Alpha 多資產對沖策略戰情室</h1>", unsafe_allow_html=True)
 col1, col2 = st.columns([1, 1])
 
 with col1:
@@ -573,7 +608,7 @@ if len(bt_df) > 10 and len(valid_assets) > 0 and bench_choice in bt_df.columns:
     c6.metric("區間 Beta", f"{bt_beta:.2f}", "大盤 1.00", delta_color="off")
     
     # ---------------------------------------------------------
-    # 新增：各個資產的資金淨值成長趨勢線圖
+    # 各個資產的資金淨值成長趨勢線圖
     # ---------------------------------------------------------
     st.markdown("<h3 style='color: #38bdf8; margin-top: 30px; font-size: 18px; border-bottom: 1px solid #24334d; padding-bottom: 10px;'>📈 各別資產資金淨值走勢 (Asset Performance)</h3>", unsafe_allow_html=True)
     
@@ -696,4 +731,4 @@ with st.expander("🔍 歷史回撤與觸發除錯檢視 (Data Inspector)"):
         st.write("資料不齊全，無法顯示除錯表。")
 
 # 標示版本號 (放置於頁尾)
-st.markdown('<div class="version-footer">Powered by Pure Alpha Quantitative Engine | Version 8.8.27 (Asset Perf Chart Build)</div>', unsafe_allow_html=True)
+st.markdown('<div class="version-footer">Powered by Pure Alpha Quantitative Engine | Version 8.8.28 (Daily Performance Tracker Build)</div>', unsafe_allow_html=True)
