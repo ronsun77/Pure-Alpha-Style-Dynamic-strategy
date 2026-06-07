@@ -317,13 +317,12 @@ else:
 st.markdown("<h1 style='color:white; font-weight:bold;'>Pure Alpha 多資產對沖策略戰情室</h1>", unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# ✨ 新增功能：今日盤勢速報 (Daily Performance Tracker)
+# 今日盤勢速報 (Daily Performance Tracker)
 # ---------------------------------------------------------
 latest_daily_returns = df_all.pct_change().iloc[-1]
 qqq_day_ret = latest_daily_returns.get('QQQ', 0.0) * 100
 spy_day_ret = latest_daily_returns.get(spx_col, 0.0) * 100
 
-# 根據當前動態漂移後的實倉比例，推算今日策略組合總報酬
 w_today = np.array([CURRENT_WEIGHTS.get(a, 0) / 100.0 for a in AVAILABLE_ASSETS])
 port_day_ret = np.dot(w_today, latest_daily_returns[AVAILABLE_ASSETS].fillna(0).values) * 100
 
@@ -347,7 +346,6 @@ st.markdown(f"""
     </div>
 </div>
 """, unsafe_allow_html=True)
-# ---------------------------------------------------------
 
 current_spx_dd = df_all['SPX_DD'].iloc[-1]
 last_state = df_all['Regime'].iloc[-2] if len(df_all) > 1 else 1
@@ -522,6 +520,9 @@ if len(bt_df) > 10 and len(valid_assets) > 0 and bench_choice in bt_df.columns:
     port_nav = np.zeros(n_days)
     port_daily_returns_list = np.zeros(n_days) 
     
+    # 用來記錄每天的歷史權重陣列
+    hist_weights = np.zeros((n_days, len(valid_assets)))
+    
     ret_array = bt_ret[valid_assets].values
     tgt_array = tgt_weights_sub[valid_assets].values
     bt_regimes = df_all.loc[bt_ret.index, 'Regime'].values
@@ -531,6 +532,9 @@ if len(bt_df) > 10 and len(valid_assets) > 0 and bench_choice in bt_df.columns:
     rebalance_count = 0
     
     for i in range(n_days):
+        # 記錄當天開盤持有的真實權重比例
+        hist_weights[i] = current_w 
+        
         day_ret = ret_array[i]
         daily_p_ret = np.dot(current_w, day_ret)
         
@@ -635,8 +639,47 @@ if len(bt_df) > 10 and len(valid_assets) > 0 and bench_choice in bt_df.columns:
     )
     st.plotly_chart(fig_assets, use_container_width=True)
 
+    # ---------------------------------------------------------
+    # ✨ 新增：歷史動態實倉比例看板 (Stacked Area Chart)
+    # ---------------------------------------------------------
+    st.markdown("<h3 style='color: #38bdf8; margin-top: 30px; font-size: 18px; border-bottom: 1px solid #24334d; padding-bottom: 10px;'>📊 歷史動態實倉比例 (Historical Asset Allocation)</h3>", unsafe_allow_html=True)
     
-    st.markdown("<h3 style='color: #38bdf8; margin-top: 30px; font-size: 18px; border-bottom: 1px solid #24334d; padding-bottom: 10px;'>📊 各年度報酬率比較矩陣 (Annual Returns)</h3>", unsafe_allow_html=True)
+    weights_df = pd.DataFrame(hist_weights, index=bt_ret.index, columns=valid_assets)
+    fig_weights = go.Figure()
+    
+    # 將資產按照風險與邏輯排序堆疊：從底層的避險(Safe, USD, Bond, Gold)疊加至進攻(Core, Lev)
+    ordered_assets = []
+    for a in [tk_safe, tk_usd, tk_bond, tk_gold, tk_core, tk_lev]:
+        if a in valid_assets: ordered_assets.append(a)
+    for a in valid_assets:
+        if a not in ordered_assets: ordered_assets.append(a)
+
+    for asset in ordered_assets:
+        fig_weights.add_trace(go.Scatter(
+            x=weights_df.index,
+            y=weights_df[asset] * 100,
+            mode='lines',
+            line=dict(width=0.5, color=CHART_COLORS.get(asset, "#94a3b8")),
+            stackgroup='one',
+            name=asset,
+            fillcolor=CHART_COLORS.get(asset, "#94a3b8")
+        ))
+        
+    fig_weights.update_layout(
+        template='plotly_dark',
+        paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='rgba(0,0,0,0)',
+        margin=dict(l=60, r=20, t=20, b=40),
+        height=350,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        yaxis_title="持有權重 (%)"
+    )
+    st.plotly_chart(fig_weights, use_container_width=True)
+
+    # ---------------------------------------------------------
+    # 各年度報酬率比較矩陣
+    # ---------------------------------------------------------
+    st.markdown("<h3 style='color: #38bdf8; margin-top: 30px; font-size: 18px; border-bottom: 1px solid #24334d; padding-bottom: 10px;'>📅 各年度報酬率比較矩陣 (Annual Returns)</h3>", unsafe_allow_html=True)
     
     annual_df = pd.DataFrame(index=cum_port.index)
     annual_df['Pure Alpha'] = cum_port
@@ -731,4 +774,4 @@ with st.expander("🔍 歷史回撤與觸發除錯檢視 (Data Inspector)"):
         st.write("資料不齊全，無法顯示除錯表。")
 
 # 標示版本號 (放置於頁尾)
-st.markdown('<div class="version-footer">Powered by Pure Alpha Quantitative Engine | Version 8.8.28 (Daily Performance Tracker Build)</div>', unsafe_allow_html=True)
+st.markdown('<div class="version-footer">Powered by Pure Alpha Quantitative Engine | Version 8.8.29 (Historical Allocation Board)</div>', unsafe_allow_html=True)
