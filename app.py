@@ -640,14 +640,48 @@ if len(bt_df) > 10 and len(valid_assets) > 0 and bench_choice in bt_df.columns:
     st.plotly_chart(fig_assets, use_container_width=True)
 
     # ---------------------------------------------------------
-    # ✨ 新增：歷史動態實倉比例看板 (Stacked Area Chart)
+    # ✨ 新增：歷史滾動波動率趨勢 (Rolling Volatility)
+    # ---------------------------------------------------------
+    st.markdown(f"<h3 style='color: #38bdf8; margin-top: 30px; font-size: 18px; border-bottom: 1px solid #24334d; padding-bottom: 10px;'>🌊 歷史滾動波動率趨勢 (Rolling Volatility {window_choice}D)</h3>", unsafe_allow_html=True)
+    
+    roll_vol_port = port_daily_ret_series.rolling(window=window_choice).std() * np.sqrt(252) * 100
+    roll_vol_bench = bt_ret[bench_choice].rolling(window=window_choice).std() * np.sqrt(252) * 100
+    
+    fig_vol = go.Figure()
+    fig_vol.add_trace(go.Scatter(
+        x=roll_vol_port.index, 
+        y=roll_vol_port.values, 
+        mode='lines', 
+        name='Pure Alpha (策略組合)', 
+        line=dict(color='#22c55e', width=2)
+    ))
+    fig_vol.add_trace(go.Scatter(
+        x=roll_vol_bench.index, 
+        y=roll_vol_bench.values, 
+        mode='lines', 
+        name=f'{bench_choice} (基準大盤)', 
+        line=dict(color='#facc15', width=1.5, dash='dot')
+    ))
+    
+    fig_vol.update_layout(
+        template='plotly_dark', 
+        paper_bgcolor='rgba(0,0,0,0)', 
+        plot_bgcolor='rgba(0,0,0,0)', 
+        margin=dict(l=60, r=20, t=20, b=40), 
+        height=300, 
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1), 
+        yaxis_title="年化波動率 (%)"
+    )
+    st.plotly_chart(fig_vol, use_container_width=True)
+
+    # ---------------------------------------------------------
+    # 歷史動態實倉比例看板 (Stacked Area Chart)
     # ---------------------------------------------------------
     st.markdown("<h3 style='color: #38bdf8; margin-top: 30px; font-size: 18px; border-bottom: 1px solid #24334d; padding-bottom: 10px;'>📊 歷史動態實倉比例 (Historical Asset Allocation)</h3>", unsafe_allow_html=True)
     
     weights_df = pd.DataFrame(hist_weights, index=bt_ret.index, columns=valid_assets)
     fig_weights = go.Figure()
     
-    # 將資產按照風險與邏輯排序堆疊：從底層的避險(Safe, USD, Bond, Gold)疊加至進攻(Core, Lev)
     ordered_assets = []
     for a in [tk_safe, tk_usd, tk_bond, tk_gold, tk_core, tk_lev]:
         if a in valid_assets: ordered_assets.append(a)
@@ -774,4 +808,4 @@ with st.expander("🔍 歷史回撤與觸發除錯檢視 (Data Inspector)"):
         st.write("資料不齊全，無法顯示除錯表。")
 
 # 標示版本號 (放置於頁尾)
-st.markdown('<div class="version-footer">Powered by Pure Alpha Quantitative Engine | Version 8.8.29 (Historical Allocation Board)</div>', unsafe_allow_html=True)
+st.markdown('<div class="version-footer">Powered by Pure Alpha Quantitative Engine | Version 8.8.30 (Historical Volatility Trend)</div>', unsafe_allow_html=True)
