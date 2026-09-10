@@ -531,6 +531,17 @@ if len(bt_df) > 10 and len(valid_assets) > 0 and bench_choice in bt_df.columns:
     threshold_frac = threshold / 100.0
     rebalance_count = 0
     
+    # ============================================================
+    # 【已修正】未來函數(look-ahead bias)問題：
+    # 原版程式在決定「第 i+1 天要用什麼倉位」時，用的是
+    # tgt_array[i+1] 與 bt_regimes[i+1]（也就是第 i+1 天收盤/當日低點
+    # 才會知道的資訊），但這個倉位馬上被拿去乘上「第 i+1 天自己的」
+    # 報酬率 —— 等於在真實交易中不可能做到的「開盤前就知道當天答案」。
+    #
+    # 修正方式：換倉的判斷一律只用「今天(第 i 天)收盤後已知」的
+    # Regime 與目標權重去決定「明天(第 i+1 天)開盤要用的倉位」，
+    # 也就是訊號整體往後平移一天再套用。
+    # ============================================================
     for i in range(n_days):
         # 記錄當天開盤持有的真實權重比例
         hist_weights[i] = current_w 
@@ -547,7 +558,9 @@ if len(bt_df) > 10 and len(valid_assets) > 0 and bench_choice in bt_df.columns:
             drifted_w = current_w * (1 + day_ret) / (1 + daily_p_ret)
         
         if i < n_days - 1:
-            tgt_w = tgt_array[i+1]
+            # 【修正】用第 i 天(今天收盤，已知)的目標權重，
+            # 而不是第 i+1 天(明天，還沒發生)的目標權重
+            tgt_w = tgt_array[i]
             
             if reb_freq == "每週確認 (Weekly)":
                 curr_week = bt_ret.index[i].isocalendar()[1]
@@ -556,7 +569,9 @@ if len(bt_df) > 10 and len(valid_assets) > 0 and bench_choice in bt_df.columns:
             else:
                 is_routine_check = True
                 
-            is_event_override = (bt_regimes[i+1] != bt_regimes[i])
+            # 【修正】Regime 轉換判斷改用「今天 vs 昨天」，
+            # 而不是「明天 vs 今天」——這樣才是今天收盤後就能確認的資訊
+            is_event_override = (bt_regimes[i] != bt_regimes[i-1]) if i > 0 else False
             
             if is_routine_check or is_event_override:
                 deviations = np.abs(drifted_w - tgt_w)
@@ -640,7 +655,7 @@ if len(bt_df) > 10 and len(valid_assets) > 0 and bench_choice in bt_df.columns:
     st.plotly_chart(fig_assets, use_container_width=True)
 
     # ---------------------------------------------------------
-    # ✨ 新增：歷史滾動波動率趨勢 (Rolling Volatility)
+    # ✨ 歷史滾動波動率趨勢 (Rolling Volatility)
     # ---------------------------------------------------------
     st.markdown(f"<h3 style='color: #38bdf8; margin-top: 30px; font-size: 18px; border-bottom: 1px solid #24334d; padding-bottom: 10px;'>🌊 歷史滾動波動率趨勢 (Rolling Volatility {window_choice}D)</h3>", unsafe_allow_html=True)
     
@@ -808,4 +823,4 @@ with st.expander("🔍 歷史回撤與觸發除錯檢視 (Data Inspector)"):
         st.write("資料不齊全，無法顯示除錯表。")
 
 # 標示版本號 (放置於頁尾)
-st.markdown('<div class="version-footer">Powered by Pure Alpha Quantitative Engine | Version 8.8.30 (Historical Volatility Trend)</div>', unsafe_allow_html=True)
+st.markdown('<div class="version-footer">Powered by Pure Alpha Quantitative Engine | Version 8.8.31 (Look-Ahead Bias Fixed)</div>', unsafe_allow_html=True)
