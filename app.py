@@ -270,6 +270,11 @@ else:
 
 current_applied_k = k_array[-1]
 
+# 【新增】把 k_array 轉成帶日期索引的 Series，方便之後在回測區間裡
+# 依日期對齊，統計「牛市模式(Regime 1)內部」有多少比例的時間
+# 其實已經被 TVM 波動率縮放悄悄降溫過（k < 1.0）
+k_series = pd.Series(k_array, index=df_all.index)
+
 mult_core_lev = k_array
 mult_bond_gold = 1.0 + (k_array - 1) * 0.525
 mult_usd = 2.0 - k_array
@@ -526,6 +531,9 @@ if len(bt_df) > 10 and len(valid_assets) > 0 and bench_choice in bt_df.columns:
     ret_array = bt_ret[valid_assets].values
     tgt_array = tgt_weights_sub[valid_assets].values
     bt_regimes = df_all.loc[bt_ret.index, 'Regime'].values
+    # 【新增】把回測區間對應的 k 值抓出來，用來統計「牛市模式內部」
+    # 有多少比例的日子其實已經被 TVM 波動率縮放降溫過
+    bt_k_values = k_series.loc[bt_ret.index].values
     
     current_w = tgt_array[0].copy()
     threshold_frac = threshold / 100.0
@@ -768,6 +776,27 @@ if len(bt_df) > 10 and len(valid_assets) > 0 and bench_choice in bt_df.columns:
     bear_days = np.sum(df_all.loc[bt_mask, 'Regime'] == 0)
     avg_reb_days = total_days // max(1, rebalance_count)
     
+    # ============================================================
+    # 【新增】牛市模式(Regime 1)內部的「隱性降溫」統計
+    # 目的：Regime 1 代表狀態機判定為「趨勢方向仍在進攻」，
+    # 但 TVM 是不分方向、只看波動率大小去縮放槓桿的，
+    # 所以即使方向沒變，只要波動率一升高，k 值一樣會被壓低。
+    # 這段統計回答：在 Regime 1 的所有交易日裡，
+    # 有多少比例其實已經被 TVM 悄悄降溫（k < 1.0，
+    # 也就是槓桿倍數已經低於「未縮放」的基準）？
+    # ============================================================
+    regime1_mask = (bt_regimes == 1)
+    regime1_total_days = int(regime1_mask.sum())
+    if regime1_total_days > 0 and use_tvm:
+        regime1_k_values = bt_k_values[regime1_mask]
+        throttled_days = int(np.sum(regime1_k_values < 1.0))
+        throttled_pct = throttled_days / regime1_total_days * 100
+        avg_k_in_regime1 = float(regime1_k_values.mean())
+    else:
+        throttled_days = 0
+        throttled_pct = 0.0
+        avg_k_in_regime1 = float(k_value)
+    
     if total_ret < bench_total_ret and bt_beta >= 0.95:
         beta_diag = f"""
         <li><span style="color:#ef4444;"><b>Beta 偽裝與稀釋效應 (Dilution Effect)：</b></span><br>
@@ -790,6 +819,19 @@ if len(bt_df) > 10 and len(valid_assets) > 0 and bench_choice in bt_df.columns:
         <li><b>回撤壓力測試 (Drawdown Exposure)：</b><br>
         區間最大回撤為 <b>{mdd*100:.2f}%</b>。若此回撤發生在左側抄底階段 (Regime 19/30)，則為預期的「建倉期浮虧」，系統正透過 {tk_lev} 吸收籌碼。</li>"""
 
+    # 【新增】牛市模式內部隱性降溫的診斷文字
+    if regime1_total_days > 0 and use_tvm:
+        if throttled_pct >= 50:
+            throttle_diag = f"""
+        <li><span style="color:#facc15;"><b>牛市模式內的隱性降溫 (Intra-Regime Throttling)：</b></span><br>
+        在狀態機判定為「核心進攻模式 (Regime 1)」的 <b>{regime1_total_days}</b> 個交易日中，有 <b>{throttled_days}</b> 天(佔比 <b>{throttled_pct:.1f}%</b>)其實已經被 TVM 波動率縮放悄悄降溫(k &lt; 1.0)，期間平均 k 值為 <b>{avg_k_in_regime1:.3f}</b>。這代表「牛市模式」有超過一半的時間並非滿血進攻，而是被波動率上升壓低了槓桿——不論當時是正常的牛市回檔還是真正走弱的前兆，只要波動率變大，曝險都會被同步縮小。</li>"""
+        else:
+            throttle_diag = f"""
+        <li><b>牛市模式內的隱性降溫 (Intra-Regime Throttling)：</b><br>
+        在狀態機判定為「核心進攻模式 (Regime 1)」的 <b>{regime1_total_days}</b> 個交易日中，有 <b>{throttled_days}</b> 天(佔比 <b>{throttled_pct:.1f}%</b>)被 TVM 波動率縮放降溫(k &lt; 1.0)，期間平均 k 值為 <b>{avg_k_in_regime1:.3f}</b>。這段區間大部分時間維持在接近滿倉槓桿的狀態，波動率縮放的干預相對有限。</li>"""
+    else:
+        throttle_diag = ""
+
     report_html = f"""
     <div style="background: rgba(23, 35, 58, 0.7); padding: 20px; border-radius: 12px; margin-top: 25px; border-left: 5px solid #38bdf8; box-shadow: 0 4px 15px rgba(0,0,0,0.2);">
         <h3 style="color: #38bdf8; margin-top: 0; font-size: 18px; border-bottom: 1px solid #24334d; padding-bottom: 10px;">📊 策略深度歸因分析 (Attribution Analysis)</h3>
@@ -802,6 +844,7 @@ if len(bt_df) > 10 and len(valid_assets) > 0 and bench_choice in bt_df.columns:
                 在 <b>{threshold:.1f}%</b> 的容忍門檻與 <b>{reb_freq}</b> 模式下，觸發真實調倉 <b>{rebalance_count}</b> 次 (平均每 {avg_reb_days} 天一次)。事件驅動與例行檢查完美結合，極大化降低了摩擦成本。</li>
                 {beta_diag}
                 {rebalance_count == 0 and "" or mdd_diag}
+                {throttle_diag}
             </ul>
         </div>
     </div>
@@ -823,4 +866,4 @@ with st.expander("🔍 歷史回撤與觸發除錯檢視 (Data Inspector)"):
         st.write("資料不齊全，無法顯示除錯表。")
 
 # 標示版本號 (放置於頁尾)
-st.markdown('<div class="version-footer">Powered by Pure Alpha Quantitative Engine | Version 8.8.31 (Look-Ahead Bias Fixed)</div>', unsafe_allow_html=True)
+st.markdown('<div class="version-footer">Powered by Pure Alpha Quantitative Engine | Version 8.8.32 (Look-Ahead Bias Fixed + Intra-Regime Throttle Stats)</div>', unsafe_allow_html=True)
